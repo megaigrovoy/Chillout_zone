@@ -1,25 +1,32 @@
 import { useCallback, useRef, useState } from 'react'
 import { FractalCanvas } from './components/FractalCanvas'
+import type { FractalHandle } from './components/FractalCanvas'
 import { useHandTracking } from './tracking/useHandTracking'
 import type { FractalParams } from './fractal/params'
 import './App.css'
 
+interface Stats {
+  params: FractalParams
+  tips: number
+}
+
 export default function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const fractalRef = useRef<FractalHandle | null>(null)
   const { status, frameRef, start, stop } = useHandTracking(videoRef)
-  const [params, setParams] = useState<FractalParams | null>(null)
+  const [stats, setStats] = useState<Stats | null>(null)
   const [showDebug, setShowDebug] = useState(false)
 
-  const handleParams = useCallback(
-    (p: FractalParams) => {
-      if (showDebug) setParams(p)
+  const handleStats = useCallback(
+    (params: FractalParams, tips: number) => {
+      if (showDebug) setStats({ params, tips })
     },
     [showDebug],
   )
 
   return (
     <div className="app">
-      <FractalCanvas frameRef={frameRef} onParams={handleParams} />
+      <FractalCanvas frameRef={frameRef} handleRef={fractalRef} onStats={handleStats} />
 
       {/* Kept mounted and hidden: MediaPipe reads pixels straight off this
           element, so it must exist and be playing whenever tracking runs. */}
@@ -30,15 +37,15 @@ export default function App() {
           <div className="panel">
             <h1>Chillout Zone</h1>
             <p className="lead">
-              Интерактивные фракталы, которыми вы управляете руками. Разрешите доступ к камере,
-              поднимите ладони перед собой и меняйте форму движением кистей.
+              Фракталы прорастают прямо из ваших пальцев, текут по вихревому полю и
+              сплетаются между собой. Разрешите доступ к камере и поднимите ладони перед собой.
             </p>
 
             <ul className="hints">
-              <li>Раскрывайте и сжимайте ладонь — меняется ветвление формы</li>
-              <li>Поднимайте и опускайте руку — растёт глубина фрактала</li>
-              <li>Поворачивайте кисть — форма закручивается</li>
-              <li>Двигайтесь быстрее — фрактал становится ярче</li>
+              <li>Раскрытая ладонь сеет ветви из всех пяти пальцев</li>
+              <li>Поворот кисти закручивает вихрь вокруг руки</li>
+              <li>Кулак отталкивает поток, раскрытая ладонь притягивает</li>
+              <li>Две руки рядом — ветви встречаются и связываются перемычками</li>
             </ul>
 
             {status.kind === 'error' && <p className="error">{status.message}</p>}
@@ -56,16 +63,17 @@ export default function App() {
       {status.kind === 'running' && (
         <div className="hud">
           <button onClick={stop}>Стоп</button>
+          <button onClick={() => fractalRef.current?.reset()}>Очистить</button>
           <button onClick={() => setShowDebug((v) => !v)}>
             {showDebug ? 'Скрыть данные' : 'Показать данные'}
           </button>
-          {showDebug && params && (
+          {showDebug && stats && (
             <dl className="debug">
-              <div><dt>глубина</dt><dd>{params.depth.toFixed(1)}</dd></div>
-              <div><dt>ветви</dt><dd>{params.branches.toFixed(1)}</dd></div>
-              <div><dt>разброс</dt><dd>{params.spread.toFixed(2)}</dd></div>
-              <div><dt>закрутка</dt><dd>{params.twist.toFixed(2)}</dd></div>
-              <div><dt>энергия</dt><dd>{params.energy.toFixed(2)}</dd></div>
+              <div><dt>ростков</dt><dd>{stats.tips}</dd></div>
+              <div><dt>дальность</dt><dd>{stats.params.depth.toFixed(1)}</dd></div>
+              <div><dt>ветви</dt><dd>{stats.params.branches.toFixed(1)}</dd></div>
+              <div><dt>разброс</dt><dd>{stats.params.spread.toFixed(2)}</dd></div>
+              <div><dt>энергия</dt><dd>{stats.params.energy.toFixed(2)}</dd></div>
             </dl>
           )}
         </div>

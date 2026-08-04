@@ -6,13 +6,13 @@ import type { HandState, TrackingFrame } from '../tracking/types'
  * even when tracking is jittery or briefly drops out.
  */
 export interface FractalParams {
-  /** Recursion depth of the branching structure. */
+  /** Growth budget multiplier — how far a lineage travels before dying. */
   depth: number
-  /** Child branches per node. */
+  /** Child branches per split. */
   branches: number
   /** Angular spread between sibling branches, radians. */
   spread: number
-  /** Child-to-parent length ratio; drives how far the form reaches outward. */
+  /** Inverse branching frequency: low splits often, high runs long and sparse. */
   ratio: number
   /** Whole-form rotation, radians. */
   rotation: number
@@ -61,20 +61,25 @@ export function paramsFromFrame(frame: TrackingFrame): FractalParams {
   const speed = hands.reduce((m, h) => Math.max(m, Math.hypot(h.velocity.x, h.velocity.y)), 0)
 
   return {
-    // An open left hand splays the branches wide; a fist pulls them into a spike.
-    spread: lerp(0.15, 1.35, left.openness),
-    branches: Math.round(lerp(2, 5, left.openness)),
-    twist: lerp(-0.5, 0.5, normalizeRotation(left.rotation)),
+    // An open left hand splays new branches wide; a fist keeps them in a
+    // tight bundle that reads as a single directed stream.
+    spread: lerp(0.15, 1.1, left.openness),
+    branches: Math.round(lerp(2, 4, left.openness)),
+    twist: lerp(-0.4, 0.4, normalizeRotation(left.rotation)),
 
-    // Right hand height controls recursion depth: reach up, grow complex.
-    depth: Math.round(lerp(4, 10, 1 - right.center.y)),
-    ratio: lerp(0.55, 0.82, right.openness),
+    // Right hand height controls how long a lineage survives before its
+    // energy runs out — reach up and the growth travels much further.
+    depth: lerp(3, 9, 1 - right.center.y),
+    // Ratio now sets how often a growing tip splits rather than a length
+    // falloff: low ratio branches densely, high ratio runs long and sparse.
+    ratio: lerp(0.35, 0.9, right.openness),
     rotation: right.rotation,
 
-    // Proximity to the camera scales the whole form.
+    // Proximity to the camera scales the reach of each emission.
     length: clamp(lerp(0.10, 0.26, right.scale / 0.22), 0.08, 0.3),
 
-    // Horizontal position picks the palette; motion adds energy.
+    // Horizontal position tints the ambient palette (per-hand hues are set in
+    // the field); motion adds energy, which drives speed, glow and decay.
     hue: (left.center.x * 300 + 160) % 360,
     energy: clamp(0.2 + speed * 0.5, 0, 1),
   }
