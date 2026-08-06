@@ -14,8 +14,6 @@ export interface HandState {
   handedness: 'Left' | 'Right'
   /** Palm centre, normalized video coords. */
   center: Point2
-  /** Fingertip positions, thumb -> pinky. */
-  tips: Point2[]
   /**
    * 0 = fist, 1 = fully splayed. Derived from mean fingertip distance to the
    * palm centre, normalized by hand size so it survives moving toward/away

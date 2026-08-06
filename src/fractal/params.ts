@@ -61,21 +61,19 @@ export function paramsFromFrame(frame: TrackingFrame): FractalParams {
   const speed = hands.reduce((m, h) => Math.max(m, Math.hypot(h.velocity.x, h.velocity.y)), 0)
 
   return {
-    // An open left hand splays new branches wide; a fist keeps them in a
-    // tight bundle that reads as a single directed stream.
-    spread: lerp(0.15, 1.1, left.openness),
+    // Openness sets how far child arms swing off the parent rim and how many
+    // there are — a fist gives a tight coil, an open palm a wide rosette.
+    spread: lerp(0.2, 1.0, left.openness),
     branches: Math.round(lerp(2, 4, left.openness)),
     twist: lerp(-0.4, 0.4, normalizeRotation(left.rotation)),
 
-    // Right hand height controls how long a lineage survives before its
-    // energy runs out — reach up and the growth travels much further.
-    depth: lerp(3, 9, 1 - right.center.y),
-    // Ratio now sets how often a growing tip splits rather than a length
-    // falloff: low ratio branches densely, high ratio runs long and sparse.
-    ratio: lerp(0.35, 0.9, right.openness),
+    // Hand height sets recursion depth: reach up for more nested levels.
+    depth: lerp(4, 9, 1 - right.center.y),
+    // Ratio drives the spiral's openness and the child scale factor.
+    ratio: lerp(0.2, 0.95, right.openness),
     rotation: right.rotation,
 
-    // Proximity to the camera scales the reach of each emission.
+    // Proximity to the camera scales the whole figure.
     length: clamp(lerp(0.10, 0.26, right.scale / 0.22), 0.08, 0.3),
 
     // Horizontal position tints the ambient palette (per-hand hues are set in

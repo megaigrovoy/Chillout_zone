@@ -37,16 +37,17 @@ export default function App() {
           <div className="panel">
             <h1>Chillout Zone</h1>
             <p className="lead">
-              Из вашей кисти во все стороны разрастаются спиральные фрактальные ленты.
-              Они текут по вихревому полю рук и сплетаются между собой. Разрешите доступ
-              к камере и поднимите ладони перед собой.
+              Из ладони раскрываются самоподобные спиральные узоры: каждый завиток
+              повторяет себя в меньшем масштабе, снова и снова. Разрешите доступ к камере
+              и поднимите ладонь перед собой.
             </p>
 
             <ul className="hints">
-              <li>Раскрытая ладонь выпускает больше лент и раскручивает широкий вихрь</li>
-              <li>Поворот кисти меняет направление и силу закрутки</li>
-              <li>Кулак отталкивает поток, раскрытая ладонь притягивает</li>
-              <li>Две руки рядом — ленты встречаются и связываются перемычками</li>
+              <li>Раскрытая ладонь — узор ветвится шире и рождается чаще</li>
+              <li>Сжатый кулак — тугая плотная спираль</li>
+              <li>Поворот кисти задаёт наклон всей фигуры</li>
+              <li>Поднимите руку выше — больше уровней вложенности</li>
+              <li>Ближе к камере — фигура крупнее</li>
             </ul>
 
             {status.kind === 'error' && <p className="error">{status.message}</p>}
@@ -70,8 +71,8 @@ export default function App() {
           </button>
           {showDebug && stats && (
             <dl className="debug">
-              <div><dt>ростков</dt><dd>{stats.tips}</dd></div>
-              <div><dt>дальность</dt><dd>{stats.params.depth.toFixed(1)}</dd></div>
+              <div><dt>сегментов</dt><dd>{stats.tips}</dd></div>
+              <div><dt>глубина</dt><dd>{stats.params.depth.toFixed(1)}</dd></div>
               <div><dt>ветви</dt><dd>{stats.params.branches.toFixed(1)}</dd></div>
               <div><dt>разброс</dt><dd>{stats.params.spread.toFixed(2)}</dd></div>
               <div><dt>энергия</dt><dd>{stats.params.energy.toFixed(2)}</dd></div>

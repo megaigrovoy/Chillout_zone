@@ -43,8 +43,11 @@ export function deriveHandState(
   // degenerate frame would otherwise produce Infinity openness downstream.
   const scale = Math.max(dist(wrist, middle), 1e-4)
 
-  const tips = TIPS.map((i) => ({ x: landmarks[i].x, y: landmarks[i].y }))
-  const spread = tips.reduce((sum, tip) => sum + dist(tip, center), 0) / tips.length / scale
+  // Fingertips are used only to measure how open the hand is; they are no
+  // longer exposed, since the visuals emit from the palm alone and per-finger
+  // tracking noise would only jitter the figure.
+  const spread =
+    TIPS.reduce((sum, i) => sum + dist(landmarks[i], center), 0) / TIPS.length / scale
   const openness = clamp01((spread - OPENNESS_MIN) / (OPENNESS_MAX - OPENNESS_MIN))
 
   const rotation = Math.atan2(middle.y - wrist.y, middle.x - wrist.x)
@@ -64,7 +67,7 @@ export function deriveHandState(
     }
   }
 
-  return { handedness, center, tips, openness, rotation, scale, velocity }
+  return { handedness, center, openness, rotation, scale, velocity }
 }
 
 /**
