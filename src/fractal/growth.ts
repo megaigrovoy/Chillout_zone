@@ -30,8 +30,10 @@ export interface Tip {
   energy: number
   /** Distance travelled since the last branch, px. */
   sinceBranch: number
-  /** Half-width of the ribbon, px. Tapers as the tip travels. */
+  /** Current half-width of the ribbon, px. Grows as the tip travels. */
   width: number
+  /** Half-width at birth — the base the widening is measured from. */
+  birthWidth: number
   /** Turn rate, rad/px — the signed tightness of this lineage's spiral. */
   curl: number
   hue: number
@@ -103,7 +105,9 @@ export class GrowthSystem {
         const angle = (i / arms) * Math.PI * 2 + spin
         // Start slightly off the palm so ribbons appear to leave the hand.
         const r = base * 0.035
-        const span = base * params.length * (3.2 + params.depth * 0.75)
+        // Long enough to cross the frame: a ribbon must be able to reach the
+        // edge, otherwise growth visibly stalls in a halo around the hand.
+        const span = base * params.length * (7 + params.depth * 1.8)
 
         this.tips.push({
           x: cx + Math.cos(angle) * r,
@@ -112,9 +116,10 @@ export class GrowthSystem {
           energy: span,
           span,
           sinceBranch: 0,
-          // Wide at the root, tapering to nothing — the reference's ribbons
-          // are thickest where they leave the spiral core.
-          width: base * (0.012 + params.energy * 0.012),
+          // Narrow at the hand and opening outward, so the form reads as
+          // erupting from the palm rather than terminating at it.
+          width: base * (0.004 + params.energy * 0.004),
+          birthWidth: base * (0.004 + params.energy * 0.004),
           // Alternating spin makes neighbouring arms coil opposite ways, which
           // is what produces interleaved shells rather than a uniform pinwheel.
           curl: (i % 2 === 0 ? 1 : -1) * (0.004 + Math.random() * 0.006),
@@ -143,7 +148,8 @@ export class GrowthSystem {
         energy: span,
         span,
         sinceBranch: 0,
-        width: base * 0.011,
+        width: base * 0.004,
+        birthWidth: base * 0.004,
         curl: (i % 2 === 0 ? 1 : -1) * (0.004 + Math.random() * 0.005),
         hue: params.hue,
         depth: 0,
@@ -173,6 +179,9 @@ export class GrowthSystem {
     // Branch often: dense splitting is what fills the frame with nested
     // spirals rather than a few lonely arms.
     const branchEvery = 34 + (1 - params.ratio) * 66
+    // Ceiling on ribbon half-width, tied to frame size so it scales with the
+    // display rather than being a magic pixel count.
+    const maxWidth = Math.min(width, height) * 0.022
     const spread = params.spread
     const next: Tip[] = []
 
@@ -191,23 +200,35 @@ export class GrowthSystem {
       let delta = ((fieldAngle - tip.angle + Math.PI) % (Math.PI * 2)) - Math.PI
       if (delta < -Math.PI) delta += Math.PI * 2
 
-      tip.angle += tip.curl * step + delta * pull
+      // Curvature decays with distance travelled — the defining property of a
+      // logarithmic spiral, and the reason the form escapes instead of winding
+      // into a tight ball near the hand. A constant turn rate would close every
+      // ribbon into a circle within a few hundred pixels.
+      const unwind = tip.curl / (1 + tip.travelled * 0.012)
+      tip.angle += unwind * step + delta * pull
 
       const nx = tip.x + Math.cos(tip.angle) * step
       const ny = tip.y + Math.sin(tip.angle) * step
 
       tip.travelled += step
-      // Taper along the lifetime, not per step, so a ribbon narrows smoothly
-      // from root to tip regardless of how the framerate chops up its path.
-      const life = Math.min(tip.travelled / Math.max(tip.span, 1), 1)
-      const w2 = tip.width * (1 - life * 0.55)
+      // Ribbons *widen* as they travel away from the hand. Tapering to a point
+      // made the form die on the spot and read as a fur ball around the palm;
+      // growing outward is what sells an expanding structure escaping to
+      // infinity. Width is driven by distance from the seed, not by a lifetime
+      // fraction, so it keeps opening for as long as the ribbon survives.
+      const reach = tip.travelled / Math.max(tip.span, 1)
+      // Widening is capped: unbounded growth compounds across generations into
+      // bands hundreds of pixels wide that merge into flat fill and destroy the
+      // structure. sqrt keeps the opening fast at first and gentle later.
+      const w2 = Math.min(tip.birthWidth * (1 + Math.sqrt(reach) * 2.2), maxWidth)
 
       const hue = sampleHue(field, tip.x, tip.y, tip.hue)
-      // Crest brightness peaks mid-life: roots stay dark, tips fade out, and
-      // the band in between catches the light.
-      const shade = Math.sin(life * Math.PI) * (0.55 + params.energy * 0.45)
-      // Lace grows as the ribbon tightens — curls cluster where it coils hard.
-      const lace = Math.min(Math.abs(tip.curl) * 90, 1) * (0.35 + params.energy * 0.5)
+      // Brightness rises with reach so the outer, larger structure is the lit
+      // part and the tangle near the hand stays dark and dense.
+      const shade = Math.min(reach * 0.9, 1) * (0.55 + params.energy * 0.45)
+      // Lace follows the *current* curvature, so curls cluster where the
+      // ribbon is still coiling and thin out as it straightens away.
+      const lace = Math.min(Math.abs(unwind) * 90, 1) * (0.35 + params.energy * 0.5)
 
       drawRibbon(ctx, {
         x1: tip.x,
@@ -232,10 +253,13 @@ export class GrowthSystem {
       tip.age += dt
 
       // Off-screen tips are dead weight — they cost time and draw nothing.
+      // Nothing dies of thinness any more: ribbons only end by running out of
+      // energy or by leaving the frame, which is what lets them keep opening
+      // all the way to the edge instead of fading out mid-flight.
       const margin = 120
       const onScreen =
         nx > -margin && nx < width + margin && ny > -margin && ny < height + margin
-      if (tip.energy <= 0 || tip.width < 0.5 || !onScreen) continue
+      if (tip.energy <= 0 || !onScreen) continue
 
       if (tip.sinceBranch >= branchEvery && next.length + this.tips.length < MAX_TIPS) {
         tip.sinceBranch = 0
@@ -250,7 +274,11 @@ export class GrowthSystem {
             energy: childEnergy,
             span: childEnergy,
             sinceBranch: 0,
-            width: Math.max(0.6, tip.width * 0.82),
+            // Children continue from the parent's current width rather than
+            // shrinking off it, so a lineage keeps opening across generations
+            // instead of thinning away a few branches out.
+            width: tip.width,
+            birthWidth: tip.width,
             // Children curl harder than the parent: successive generations
             // coil tighter, which is exactly the self-similar nesting that
             // makes the reference image read as a fractal.
