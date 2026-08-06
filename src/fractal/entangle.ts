@@ -10,7 +10,7 @@ import type { Tip } from './growth'
  */
 
 /** Tips closer than this (px) are considered to have met. */
-const LINK_DIST = 46
+const LINK_DIST = 70
 
 /**
  * Cap on bridges per frame. Pair-checking is the one genuinely quadratic thing
@@ -18,8 +18,11 @@ const LINK_DIST = 46
  */
 const MAX_LINKS = 90
 
-/** Only every Nth tip is considered, to keep the pair scan cheap. */
-const STRIDE = 3
+/**
+ * Only every Nth tip is considered, to keep the pair scan cheap. Ribbons are
+ * far fewer than the old threads, so every tip can be checked.
+ */
+const STRIDE = 1
 
 export function drawEntanglement(
   ctx: CanvasRenderingContext2D,

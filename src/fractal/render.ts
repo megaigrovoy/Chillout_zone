@@ -26,7 +26,7 @@ export class FractalRenderer {
     const ctx = this.trail.getContext('2d')
     if (!ctx) throw new Error('2D context unavailable for trail layer')
     this.trailCtx = ctx
-    this.trailCtx.fillStyle = '#06080f'
+    this.trailCtx.fillStyle = '#040c1e'
     this.trailCtx.fillRect(0, 0, width, height)
   }
 
@@ -42,7 +42,7 @@ export class FractalRenderer {
     next.height = Math.max(1, height)
     const ctx = next.getContext('2d')
     if (!ctx) return
-    ctx.fillStyle = '#06080f'
+    ctx.fillStyle = '#040c1e'
     ctx.fillRect(0, 0, width, height)
     ctx.drawImage(previous, 0, 0)
 
@@ -56,7 +56,7 @@ export class FractalRenderer {
   reset() {
     this.growth.clear()
     this.trailCtx.globalCompositeOperation = 'source-over'
-    this.trailCtx.fillStyle = '#06080f'
+    this.trailCtx.fillStyle = '#040c1e'
     this.trailCtx.fillRect(0, 0, this.width, this.height)
   }
 
@@ -76,13 +76,15 @@ export class FractalRenderer {
     // Fade the accumulated layer. The rate is per-second and deliberately tiny
     // so structures linger for tens of seconds; multiplying by dt keeps the
     // decay identical at any framerate.
-    const decay = (0.055 + params.energy * 0.05) * dt
+    const decay = (0.035 + params.energy * 0.03) * dt
     trailCtx.globalCompositeOperation = 'source-over'
-    trailCtx.fillStyle = `rgba(6, 8, 16, ${Math.min(decay, 0.5)})`
+    trailCtx.fillStyle = `rgba(4, 12, 30, ${Math.min(decay, 0.5)})`
     trailCtx.fillRect(0, 0, width, height)
 
-    // Growth is additive so crossing branches bloom where they overlap.
-    trailCtx.globalCompositeOperation = 'lighter'
+    // Ribbons are drawn opaque over each other, not additively: solid bands
+    // that occlude give the layered, shell-like depth of the reference image,
+    // whereas additive blending washes overlaps out to white.
+    trailCtx.globalCompositeOperation = 'source-over'
 
     const field = fieldFromHands(hands, width, height, this.time)
 
@@ -115,12 +117,13 @@ function drawTipGlow(
   params: FractalParams,
 ) {
   for (const tip of tips) {
-    // Newly born tips flash brighter, which makes emission from the fingers
+    // Newly born ribbons flash brighter, which makes emission from the hand
     // visible as a pulse rather than a steady stream.
-    const youth = Math.max(0, 1 - tip.age * 2.2)
-    ctx.fillStyle = `hsla(${tip.hue}, 95%, 80%, ${0.10 + youth * 0.45})`
+    const youth = Math.max(0, 1 - tip.age * 1.6)
+    ctx.fillStyle = `hsla(${tip.hue}, 95%, 82%, ${0.08 + youth * 0.30})`
     ctx.beginPath()
-    ctx.arc(tip.x, tip.y, 1 + youth * 3 + params.energy * 1.2, 0, Math.PI * 2)
+    // Scale the glow with the ribbon so a wide band gets a wide head.
+    ctx.arc(tip.x, tip.y, tip.width * 0.7 + youth * 3 + params.energy * 1.2, 0, Math.PI * 2)
     ctx.fill()
   }
 }
@@ -136,7 +139,7 @@ function drawCursors(
   for (const hand of hands) {
     const cx = (1 - hand.center.x) * width
     const cy = hand.center.y * height
-    const hue = hand.handedness === 'Left' ? 195 : 310
+    const hue = hand.handedness === 'Left' ? 205 : 288
 
     ctx.strokeStyle = `hsla(${hue}, 90%, 72%, 0.35)`
     ctx.lineWidth = 1.5

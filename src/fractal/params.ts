@@ -80,7 +80,9 @@ export function paramsFromFrame(frame: TrackingFrame): FractalParams {
 
     // Horizontal position tints the ambient palette (per-hand hues are set in
     // the field); motion adds energy, which drives speed, glow and decay.
-    hue: (left.center.x * 300 + 160) % 360,
+    // Kept inside the blue..violet band so the form stays in the cool palette
+    // of the reference rather than sweeping the whole colour wheel.
+    hue: 190 + left.center.x * 110,
     energy: clamp(0.2 + speed * 0.5, 0, 1),
   }
 }

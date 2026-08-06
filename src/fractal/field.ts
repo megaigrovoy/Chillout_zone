@@ -54,7 +54,7 @@ export function fieldFromHands(
       // An open hand gently gathers, a fist repels — so you can push the form
       // away or cup it toward you.
       radial: hand.openness * 0.5 - 0.25,
-      hue: hand.handedness === 'Left' ? 195 : 310,
+      hue: hand.handedness === 'Left' ? 205 : 288,
     }
   })
 
