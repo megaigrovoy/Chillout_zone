@@ -130,19 +130,36 @@ export function useSegmentation(videoRef: React.RefObject<HTMLVideoElement | nul
           if (raw.length >= mw * mh) {
             const grid = silhouetteRef.current.grid
 
-            // Nearest-neighbour downsample into the trace grid. The mask is
-            // one byte per pixel holding a category index.
+            // Box-filter downsample: average every mask pixel falling inside
+            // a trace cell rather than picking one. Nearest-neighbour made the
+            // occupancy strictly 0 or 1, which quantised the outline into a
+            // staircase; averaging yields fractional coverage at the boundary,
+            // so the edge can sit between cells.
+            const bx = mw / TRACE_W
+            const by = mh / TRACE_H
             for (let y = 0; y < TRACE_H; y++) {
-              const sy = ((y * mh) / TRACE_H) | 0
-              const srow = sy * mw
+              const sy0 = (y * by) | 0
+              const sy1 = Math.max(sy0 + 1, ((y + 1) * by) | 0)
               const drow = y * TRACE_W
               for (let x = 0; x < TRACE_W; x++) {
-                const sx = ((x * mw) / TRACE_W) | 0
-                // selfie_segmenter labels the PERSON as category 0 and the
-                // background as 255 — the opposite of the intuitive reading,
-                // and getting it backwards outlines the whole frame instead
-                // of the body.
-                const target = raw[srow + sx] === PERSON_CATEGORY ? 1 : 0
+                const sx0 = (x * bx) | 0
+                const sx1 = Math.max(sx0 + 1, ((x + 1) * bx) | 0)
+
+                let hit = 0
+                let total = 0
+                for (let sy = sy0; sy < sy1; sy++) {
+                  const srow = sy * mw
+                  for (let sx = sx0; sx < sx1; sx++) {
+                    // selfie_segmenter labels the PERSON as category 0 and the
+                    // background as 255 — the opposite of the intuitive
+                    // reading, and getting it backwards outlines the whole
+                    // frame instead of the body.
+                    if (raw[srow + sx] === PERSON_CATEGORY) hit++
+                    total++
+                  }
+                }
+
+                const target = total > 0 ? hit / total : 0
                 const i = drow + x
                 // Ease toward the new value so the outline settles smoothly
                 // between segmentation frames.

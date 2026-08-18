@@ -28,12 +28,48 @@ let layerStamp = -1
 let layerHue = -1
 
 /**
- * Layer resolution. The aura is drawn small and scaled up, which produces the
- * blur for free — upscaling a low-resolution edge with smoothing enabled is a
- * blur, and costs a fraction of what canvas filter blur would.
+ * Layer resolution.
+ *
+ * Raised well above the trace grid (160x120): the first version drew the edge
+ * as one fillRect per grid cell at roughly grid resolution, so every cell
+ * became a hard-edged block ~12px across once stretched to the screen, and
+ * upscaling could not hide squares that large. Drawing into a bigger layer
+ * with soft brushes gives the outline room to be smooth before it is scaled.
  */
-const LAYER_W = 240
-const LAYER_H = 180
+const LAYER_W = 480
+const LAYER_H = 360
+
+/**
+ * Reusable radial-gradient brush.
+ *
+ * A soft brush has no edges by construction, which is the actual fix for the
+ * blockiness — a rectangle stays a rectangle no matter how much it is blurred
+ * afterwards. The gradient is built once into its own tile and stamped, since
+ * creating a gradient per cell would be far slower.
+ */
+const BRUSH_SIZE = 64
+let brush: HTMLCanvasElement | null = null
+
+function ensureBrush(): HTMLCanvasElement | null {
+  if (brush) return brush
+  const c = document.createElement('canvas')
+  c.width = BRUSH_SIZE
+  c.height = BRUSH_SIZE
+  const bctx = c.getContext('2d')
+  if (!bctx) return null
+  const r = BRUSH_SIZE / 2
+  const grad = bctx.createRadialGradient(r, r, 0, r, r, r)
+  // A soft falloff rather than a linear one: linear leaves a visible disc
+  // boundary where the alpha hits zero.
+  grad.addColorStop(0, 'rgba(255,255,255,1)')
+  grad.addColorStop(0.35, 'rgba(255,255,255,0.55)')
+  grad.addColorStop(0.7, 'rgba(255,255,255,0.14)')
+  grad.addColorStop(1, 'rgba(255,255,255,0)')
+  bctx.fillStyle = grad
+  bctx.fillRect(0, 0, BRUSH_SIZE, BRUSH_SIZE)
+  brush = c
+  return brush
+}
 
 function ensureLayer(): CanvasRenderingContext2D | null {
   if (layerCtx) return layerCtx
@@ -45,6 +81,28 @@ function ensureLayer(): CanvasRenderingContext2D | null {
   layer = c
   layerCtx = ctx
   return ctx
+}
+
+/**
+ * Bilinear sample of the occupancy grid at fractional coordinates.
+ *
+ * Nearest-neighbour here would defeat the finer stepping entirely: the outline
+ * would still snap to whole cells and keep its staircase.
+ */
+function sample(grid: Float32Array, gw: number, gh: number, x: number, y: number): number {
+  const x0 = Math.max(0, Math.min(gw - 1, Math.floor(x)))
+  const y0 = Math.max(0, Math.min(gh - 1, Math.floor(y)))
+  const x1 = Math.min(gw - 1, x0 + 1)
+  const y1 = Math.min(gh - 1, y0 + 1)
+  const fx = x - x0
+  const fy = y - y0
+
+  const a = grid[y0 * gw + x0]
+  const b = grid[y0 * gw + x1]
+  const c = grid[y1 * gw + x0]
+  const d = grid[y1 * gw + x1]
+
+  return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy
 }
 
 export function drawAura(
@@ -60,12 +118,15 @@ export function drawAura(
   const lc = ensureLayer()
   if (!lc || !layer) return
 
+  const br = ensureBrush()
+  if (!br) return
+
   const { grid, width: gw, height: gh } = sil
 
-  // Cell size on the layer, with a slight overlap so adjacent edge cells merge
-  // into a continuous band instead of a dotted line.
-  const cw = (LAYER_W / gw) * 1.9
-  const ch = (LAYER_H / gh) * 1.9
+  // Brush footprint on the layer. Generous overlap so adjacent stamps fuse
+  // into one continuous band rather than reading as a row of dots.
+  const cw = (LAYER_W / gw) * 5.0
+  const ch = (LAYER_H / gh) * 5.0
 
   // Colour drifts along the palette over time, matching the skeleton and
   // trails so the whole overlay family shimmers together.
@@ -82,28 +143,47 @@ export function drawAura(
    layerStamp = sil.stamp
    layerHue = hueBucket
    lc.clearRect(0, 0, LAYER_W, LAYER_H)
-   lc.globalCompositeOperation = 'source-over'
+   // Stamps accumulate additively so overlapping brushes build a bright,
+   // continuous ridge instead of each one flatly overwriting the last.
+   lc.globalCompositeOperation = 'lighter'
 
-   for (let y = 1; y < gh - 1; y++) {
-    for (let x = 1; x < gw - 1; x++) {
-      const i = y * gw + x
-      const v = grid[i]
+   // Walk a finer virtual grid than the occupancy data and sample it
+   // bilinearly. Stepping cell-by-cell made the outline follow the grid's
+   // staircase; sub-cell steps let it land between cells and read as a curve.
+   const STEP = 0.5
+   for (let y = 1; y < gh - 1; y += STEP) {
+    for (let x = 1; x < gw - 1; x += STEP) {
+      const v = sample(grid, gw, gh, x, y)
       if (v < 0.35) continue
 
-      // Edge strength: how much this cell differs from its neighbours. Interior
-      // cells match all four and score ~0, so only the boundary lights up.
-      const d =
-        Math.abs(v - grid[i - 1]) +
-        Math.abs(v - grid[i + 1]) +
-        Math.abs(v - grid[i - gw]) +
-        Math.abs(v - grid[i + gw])
+      // Edge strength from the local gradient: interior points match their
+      // surroundings and score ~0, so only the boundary lights up.
+      const dx = sample(grid, gw, gh, x + 1, y) - sample(grid, gw, gh, x - 1, y)
+      const dy = sample(grid, gw, gh, x, y + 1) - sample(grid, gw, gh, x, y - 1)
+      const d = Math.abs(dx) + Math.abs(dy)
       if (d < 0.25) continue
 
-      const a = Math.min(1, d * 0.55)
-      lc.fillStyle = `rgba(${r}, ${g}, ${b}, ${a})`
-      lc.fillRect((x / gw) * LAYER_W - cw / 2, (y / gh) * LAYER_H - ch / 2, cw, ch)
+      // Weight by edge strength so the band fades where the boundary is soft,
+      // and scale down for the denser sampling to keep total brightness even.
+      const a = Math.min(1, d * 0.55) * STEP * STEP * 1.6
+      lc.globalAlpha = a
+      lc.drawImage(
+        br,
+        (x / gw) * LAYER_W - cw / 2,
+        (y / gh) * LAYER_H - ch / 2,
+        cw,
+        ch,
+      )
     }
    }
+
+   // Tint the accumulated white glow in one pass. Colouring per stamp would
+   // mean a fillStyle change per cell for no visual difference.
+   lc.globalAlpha = 1
+   lc.globalCompositeOperation = 'source-in'
+   lc.fillStyle = `rgb(${r}, ${g}, ${b})`
+   lc.fillRect(0, 0, LAYER_W, LAYER_H)
+   lc.globalCompositeOperation = 'source-over'
   }
 
   // Composite additively and mirrored, matching the video the player sees.
