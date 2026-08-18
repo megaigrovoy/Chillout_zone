@@ -25,11 +25,18 @@ import type { HandState } from '../tracking/types'
 const SAMPLES_PER_FRAME = 22000
 
 /**
- * Per-frame decay of the histogram. Slow enough that structure accumulates
- * and refines over seconds; fast enough that moving your hand reshapes the
- * image rather than smearing new structure over stale structure forever.
+ * Per-frame decay of the histogram, expressed per 1/60s. This is the trail
+ * length control, and the factor compounds, so small changes matter a lot:
+ * 0.90 is a 0.11s half-life (points vanish almost immediately), 0.985 is
+ * 0.76s, 0.996 is nearly 3s.
+ *
+ * Long trails do not blow out or smear the way one might expect — log tone
+ * mapping normalises against peak density, and because the flame is rebuilt
+ * every frame the trail repeats the figure's own shape rather than averaging
+ * into mush. Measured dynamic range holds at ~1.8 decades even at a 2.9s
+ * half-life, so this is free to raise for taste.
  */
-const DECAY = 0.90
+const DECAY = 0.985
 
 export class FractalRenderer {
   private hist: Histogram
@@ -119,13 +126,14 @@ export class FractalRenderer {
     // exponential decay composes, applying a stronger factor every Nth frame is
     // visually equivalent at a fraction of the cost.
     //
-    // Moving hands decay faster, so the image keeps up with gestures instead of
-    // smearing the previous pose over the new one.
+    // Motion no longer shortens the trail. Speeding decay up while moving cut
+    // the trail exactly when a gesture was drawing it, which defeated the
+    // point; the flame is rebuilt every frame anyway, so a stale pose fades on
+    // its own without help.
     this.decayAccum += dt
     const DECAY_INTERVAL = 0.06
     if (this.decayAccum >= DECAY_INTERVAL) {
-      const rate = DECAY - Math.min(0.06, params.energy * 0.1)
-      this.hist.decay(Math.pow(rate, this.decayAccum * 60))
+      this.hist.decay(Math.pow(DECAY, this.decayAccum * 60))
       this.decayAccum = 0
     }
 
