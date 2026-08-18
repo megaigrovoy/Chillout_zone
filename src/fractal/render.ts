@@ -1,5 +1,6 @@
 import { Histogram, iterate, toneMap } from './flame'
-import { grandJulian, buildPalette } from './presets'
+import { handFlame, buildPalette } from './presets'
+import type { HandControl } from './presets'
 import type { FlameSpec } from './flame'
 import type { FractalParams } from './params'
 import type { HandState } from '../tracking/types'
@@ -38,18 +39,14 @@ export class FractalRenderer {
   private hueShift = 0.6
   private samples = 0
   private decayAccum = 0
+  private time = 0
+  private camScale = 0.22
 
   constructor(private width: number, private height: number) {
     this.hist = new Histogram(Math.max(1, width), Math.max(1, height))
     this.image = new ImageData(Math.max(1, width), Math.max(1, height))
     this.palette = buildPalette(this.hueShift, 0.3)
-    this.spec = grandJulian({
-      openness: 0.5,
-      rotation: 0,
-      height: 0.5,
-      energy: 0.2,
-      hueShift: this.hueShift,
-    })
+    this.spec = handFlame({ hands: [], energy: 0.2, time: 0 })
   }
 
   /**
@@ -82,42 +79,68 @@ export class FractalRenderer {
     hands: HandState[],
     dt: number,
   ) {
-    const hand = hands[0]
+    this.time += dt
 
-    // Hand state drives the flame's construction. With no hand, the figure
-    // drifts slowly so the screen is never static.
-    const controls = {
-      openness: hand ? hand.openness : 0.45 + Math.sin(performance.now() * 0.0002) * 0.25,
-      rotation: hand ? hand.rotation : performance.now() * 0.00012,
-      height: hand ? hand.center.y : 0.5,
+    // Convert every tracked hand into flame space. Both hands contribute —
+    // each gets its own transform cluster anchored at its position, so the
+    // structure grows out of the hands rather than out of a fixed centre.
+    const controls: HandControl[] = hands.map((h) => {
+      const speed = Math.hypot(h.velocity.x, h.velocity.y)
+      return {
+        // Mirrored to match the video, and mapped to the flame's -1..1 space.
+        x: ((1 - h.center.x) - 0.5) * 2.4,
+        y: (h.center.y - 0.5) * 2.4,
+        openness: h.openness,
+        rotation: h.rotation,
+        energy: Math.min(1, speed * 1.6),
+        scale: h.scale,
+        colorBase: h.handedness === 'Left' ? 0.06 : 0.62,
+      }
+    })
+
+    this.spec = handFlame({
+      hands: controls,
       energy: params.energy,
-      hueShift: this.hueShift,
-    }
+      time: this.time,
+    })
 
-    this.spec = grandJulian(controls)
-
-    // Palette follows hand x so sliding across the frame recolours the figure.
-    const targetHue = hand ? 0.5 + (1 - hand.center.x) * 0.35 : 0.6
-    this.hueShift += (targetHue - this.hueShift) * Math.min(1, dt * 2)
+    // Palette follows the hands. Two hands average their positions, so
+    // sweeping either one recolours the whole figure.
+    const targetHue =
+      controls.length > 0
+        ? 0.42 + controls.reduce((s2, h) => s2 + h.x, 0) / controls.length * 0.22
+        : 0.6
+    // Eased fast enough to feel responsive but not so fast that tracking
+    // jitter makes the colour flicker.
+    this.hueShift += (targetHue - this.hueShift) * Math.min(1, dt * 4)
     this.palette = buildPalette(this.hueShift, params.energy)
 
     // Decay is batched: running it every frame costs ~11ms at 1080p, and since
     // exponential decay composes, applying a stronger factor every Nth frame is
     // visually equivalent at a fraction of the cost.
+    //
+    // Moving hands decay faster, so the image keeps up with gestures instead of
+    // smearing the previous pose over the new one.
     this.decayAccum += dt
-    const DECAY_INTERVAL = 0.1
+    const DECAY_INTERVAL = 0.06
     if (this.decayAccum >= DECAY_INTERVAL) {
-      this.hist.decay(Math.pow(DECAY, this.decayAccum * 60))
+      const rate = DECAY - Math.min(0.06, params.energy * 0.1)
+      this.hist.decay(Math.pow(rate, this.decayAccum * 60))
       this.decayAccum = 0
     }
 
-    const camera = {
-      // Zoom follows hand proximity; the flame is roughly unit-scaled, so the
-      // 0.25 factor frames it with margin.
-      scale: 0.25 * (hand ? 0.8 + hand.scale * 1.6 : 1),
-      ox: 0.5,
-      oy: 0.5,
-    }
+    // The camera frames whatever is on screen. Because the transforms are
+    // anchored at the hands, the figure already sits under them; the camera
+    // only needs a stable scale, so it does not chase the hands and make the
+    // whole image lurch.
+    const proximity =
+      controls.length > 0
+        ? controls.reduce((s2, h) => s2 + h.scale, 0) / controls.length
+        : 0.16
+    const targetScale = 0.20 * (0.85 + proximity * 1.1)
+    this.camScale += (targetScale - this.camScale) * Math.min(1, dt * 3)
+
+    const camera = { scale: this.camScale, ox: 0.5, oy: 0.5 }
 
     iterate(this.spec, this.hist, this.palette, SAMPLES_PER_FRAME, camera)
     this.samples = this.samples * 0.98 + SAMPLES_PER_FRAME
@@ -125,7 +148,7 @@ export class FractalRenderer {
     toneMap(this.hist, this.image, 2.2, 1.6)
     ctx.putImageData(this.image, 0, 0)
 
-    if (hand) drawCursor(ctx, this.width, this.height, hand, params)
+    for (const h of hands) drawCursor(ctx, this.width, this.height, h, params)
   }
 }
 
@@ -139,8 +162,9 @@ function drawCursor(
 ) {
   const cx = (1 - hand.center.x) * width
   const cy = hand.center.y * height
+  const hue = hand.handedness === 'Left' ? 195 : 300
   ctx.globalCompositeOperation = 'lighter'
-  ctx.strokeStyle = `hsla(190, 90%, 75%, ${0.22 + params.energy * 0.2})`
+  ctx.strokeStyle = `hsla(${hue}, 90%, 75%, ${0.22 + params.energy * 0.2})`
   ctx.lineWidth = 2
   ctx.beginPath()
   ctx.arc(cx, cy, 18 + hand.openness * 30, 0, Math.PI * 2)

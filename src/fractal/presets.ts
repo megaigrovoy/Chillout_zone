@@ -37,69 +37,123 @@ function vars(spec: Array<[keyof typeof VARIATIONS, number]>) {
     .map(([name, w]) => ({ fn: VARIATIONS[name] as Variation, w }))
 }
 
-export interface FlameControls {
+/** One hand, already converted into flame space (-1..1, y up-ish). */
+export interface HandControl {
+  /** Position in flame space — where this hand's structure is anchored. */
+  x: number
+  y: number
   /** 0..1 hand openness. */
   openness: number
   /** Hand rotation, radians. */
   rotation: number
-  /** 0..1 vertical position (0 = top). */
-  height: number
-  /** 0..1 motion energy. */
+  /** 0..1 motion energy for this hand. */
   energy: number
-  /** Palette rotation seed. */
-  hueShift: number
+  /** Apparent hand size, a proximity proxy. */
+  scale: number
+  /** Palette offset for this hand, 0..1. */
+  colorBase: number
+}
+
+export interface FlameControls {
+  hands: HandControl[]
+  energy: number
+  /** Seconds since start, for the idle drift. */
+  time: number
 }
 
 /**
- * The "grand julian" family: a julia variation against a rotated affine set.
+ * Build the flame from the tracked hands.
  *
- * This is the classic Apophysis construction behind the spiral-with-lace look
- * of the reference image — nested spirals whose arms are themselves made of
- * smaller spirals. The julia variation's square-root branch is what generates
- * the self-similar doubling.
+ * Each hand contributes its own transform cluster anchored at its position, so
+ * structure visibly emanates from the hands rather than from a fixed centre.
+ * With two hands the clusters share one attractor, which is what makes the
+ * forms grow toward each other and interlock instead of sitting side by side.
  */
-export function grandJulian(c: FlameControls): FlameSpec {
-  // Openness opens the spiral: more rotation between arms, wider scale.
-  const spin = c.rotation
-  const spread = 0.45 + c.openness * 0.5
-
+export function handFlame(c: FlameControls): FlameSpec {
   const xforms: XForm[] = []
 
-  // The julia transform: generates the spiral arms and their nesting.
-  xforms.push({
-    ...affine(spin, spread, spread, 0, 0),
-    weight: 1.0,
-    color: 0.0,
-    vars: vars([
-      ['julia', 1.0],
-      ['spiral', 0.06 + c.energy * 0.10],
-    ]),
-  })
+  if (c.hands.length === 0) {
+    return idleFlame(c.time, c.energy)
+  }
 
-  // A gentle linear contraction keeps density in the core so the centre reads
-  // as a bright hub rather than a hole.
-  xforms.push({
-    ...affine(spin * 0.5 + 0.3, 0.42, 0.42, 0.22, 0.1),
-    weight: 0.42,
-    color: 0.35,
-    vars: vars([
-      ['linear', 0.7],
-      ['swirl', 0.3 + c.openness * 0.5],
-    ]),
-  })
+  for (const hand of c.hands) {
+    // Openness maps to spiral spread over a deliberately wide range: the
+    // previous 0.45..0.95 band was too narrow to feel responsive.
+    const spread = 0.28 + hand.openness * 0.72
+    const spin = hand.rotation
 
-  // Depth (hand height) adds a third transform that decorates the arms with
-  // finer structure — this is what fills the rim with lace.
-  const detail = 1 - c.height
-  if (detail > 0.25) {
+    // The julia transform anchored at the hand — the spiral arms. Translating
+    // the affine part by the hand position is what makes the figure grow out
+    // of the hand instead of out of the origin.
     xforms.push({
-      ...affine(-spin * 0.8, 0.3 + detail * 0.3, 0.3 + detail * 0.3, -0.3, 0.25),
-      weight: 0.3 + detail * 0.35,
-      color: 0.72,
+      ...affine(spin, spread, spread, hand.x, hand.y),
+      weight: 1.0,
+      color: hand.colorBase,
       vars: vars([
-        ['disc', 0.35 * detail],
-        ['spherical', 0.5],
-        ['linear', 0.3],
+        ['julia', 1.0],
+        ['spiral', 0.04 + hand.energy * 0.22],
+        // Openness swaps in swirl, which visibly churns the arms when the
+        // hand opens — a much stronger read than a scale change alone.
+        ['swirl', hand.openness * 0.35],
+      ]),
+    })
+
+    // A contracting transform that keeps density near the hand, so each hand
+    // has a bright core the structure radiates from.
+    xforms.push({
+      ...affine(
+        spin * 0.6 + 0.3,
+        0.36 + hand.openness * 0.22,
+        0.36 + hand.openness * 0.22,
+        hand.x * 0.72,
+        hand.y * 0.72,
+      ),
+      weight: 0.5 + hand.openness * 0.35,
+      color: hand.colorBase + 0.18,
+      vars: vars([
+        ['linear', 0.62],
+        ['spherical', 0.2 + hand.openness * 0.4],
+        ['disc', hand.energy * 0.3],
+      ]),
+    })
+
+    // Fast movement adds a third transform that throws off filaments, so
+    // waving actually changes the figure's structure and not just its colour.
+    if (hand.energy > 0.12) {
+      xforms.push({
+        ...affine(-spin * 1.1, 0.3 + hand.energy * 0.4, 0.3, hand.x * 1.1, hand.y * 1.1),
+        weight: 0.25 + hand.energy * 0.6,
+        color: hand.colorBase + 0.4,
+        vars: vars([
+          ['handkerchief', 0.3 + hand.energy * 0.5],
+          ['linear', 0.35],
+          ['horseshoe', hand.energy * 0.35],
+        ]),
+      })
+    }
+  }
+
+  // With both hands up, one shared transform links the two clusters. It is
+  // what makes the halves reach toward each other and entangle rather than
+  // rendering as two independent flames in one frame.
+  if (c.hands.length >= 2) {
+    const [a, b] = c.hands
+    const mx = (a.x + b.x) * 0.5
+    const my = (a.y + b.y) * 0.5
+    const between = Math.atan2(b.y - a.y, b.x - a.x)
+    const gap = Math.hypot(b.x - a.x, b.y - a.y)
+    // Closer hands bind harder, so bringing them together visibly fuses the
+    // two structures into one.
+    const bind = Math.max(0, 1 - gap / 2.2)
+
+    xforms.push({
+      ...affine(between, 0.55 + bind * 0.3, 0.34, mx, my),
+      weight: 0.35 + bind * 0.9,
+      color: 0.55,
+      vars: vars([
+        ['linear', 0.45],
+        ['swirl', 0.3 + bind * 0.6],
+        ['spherical', 0.35],
       ]),
     })
   }
@@ -113,7 +167,44 @@ export function grandJulian(c: FlameControls): FlameSpec {
       weight: 1,
       color: 0,
       vars: vars([
-        ['eyefish', 0.22 + c.energy * 0.15],
+        ['eyefish', 0.18 + c.energy * 0.2],
+        ['linear', 0.85],
+      ]),
+    },
+  }
+}
+
+/** Slowly drifting figure shown when no hands are visible. */
+function idleFlame(time: number, energy: number): FlameSpec {
+  const spin = time * 0.12
+  const spread = 0.6 + Math.sin(time * 0.2) * 0.25
+  return {
+    xforms: [
+      {
+        ...affine(spin, spread, spread, 0, 0),
+        weight: 1,
+        color: 0.1,
+        vars: vars([
+          ['julia', 1.0],
+          ['spiral', 0.08],
+        ]),
+      },
+      {
+        ...affine(spin * 0.5 + 0.3, 0.42, 0.42, 0.22, 0.1),
+        weight: 0.45,
+        color: 0.55,
+        vars: vars([
+          ['linear', 0.7],
+          ['swirl', 0.4],
+        ]),
+      },
+    ],
+    final: {
+      ...affine(0, 1, 1, 0, 0),
+      weight: 1,
+      color: 0,
+      vars: vars([
+        ['eyefish', 0.2 + energy * 0.15],
         ['linear', 0.82],
       ]),
     },
@@ -138,7 +229,7 @@ export function buildPalette(hueShift: number, energy: number): Float32Array {
 
     // Bias toward the cool end so the palette stays in the blue/violet family
     // of the reference rather than sweeping through every hue.
-    const boost = 1 + energy * 0.35
+    const boost = 1 + energy * 0.45
     p[i * 3] = Math.min(255, r * 190 * boost)
     p[i * 3 + 1] = Math.min(255, g * 215 * boost)
     p[i * 3 + 2] = Math.min(255, bl * 255 * boost)
