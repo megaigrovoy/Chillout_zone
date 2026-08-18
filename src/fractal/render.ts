@@ -4,6 +4,7 @@ import type { HandControl } from './presets'
 import { drawSkeleton } from './skeleton'
 import { breathe } from './breathing'
 import { Pulse } from './pulse'
+import { CollisionTracker, NO_CONTACT } from './collision'
 import { FingerTrails } from './fingerTrails'
 import type { FlameSpec } from './flame'
 import type { FractalParams } from './params'
@@ -78,6 +79,7 @@ export class FractalRenderer {
   private trails = new FingerTrails()
   private pulse = new Pulse()
   private pulseLevel = 0
+  private collision = new CollisionTracker()
 
   /** Histogram resolution, which may be below the canvas resolution. */
   private hw = 1
@@ -139,6 +141,7 @@ export class FractalRenderer {
     this.trails.clear()
     this.pulse.reset()
     this.pulseLevel = 0
+    this.collision.reset()
   }
 
   /** Live sample count, surfaced in the debug HUD. */
@@ -179,12 +182,27 @@ export class FractalRenderer {
     )
     this.pulseLevel = this.pulse.update(peakSpeed, dt) * PULSE_STRENGTH
 
+    // Collision needs both hands; with one or none the forms have nothing to
+    // push against.
+    const contact =
+      controls.length >= 2
+        ? this.collision.update(
+            controls[0].x,
+            controls[0].y,
+            controls[1].x,
+            controls[1].y,
+            dt,
+          )
+        : NO_CONTACT
+    if (controls.length < 2) this.collision.reset()
+
     this.spec = handFlame({
       hands: controls,
       energy: params.energy,
       time: this.time,
       breath: BREATH,
       pulse: this.pulseLevel,
+      contact,
     })
 
     // Palette follows the hands. Two hands average their positions, so
@@ -233,7 +251,12 @@ export class FractalRenderer {
     // as a whole rather than only rearranging itself.
     const swell = breathe(this.time, BREATH).swell
     // A hit flashes the whole image brighter on top of the slow swell.
-    toneMap(this.hist, this.image, 2.2, 1.6 * swell * (1 + this.pulseLevel * 0.5))
+    toneMap(
+      this.hist,
+      this.image,
+      2.2,
+      1.6 * swell * (1 + this.pulseLevel * 0.5 + contact.impact * 0.45),
+    )
 
     if (this.scalerCtx && this.scaler) {
       this.scalerCtx.putImageData(this.image, 0, 0)

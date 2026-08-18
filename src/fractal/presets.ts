@@ -1,5 +1,7 @@
 import { VARIATIONS } from './variations'
 import { breathe } from './breathing'
+import { repel, NO_CONTACT } from './collision'
+import type { Contact } from './collision'
 import type { XForm, FlameSpec } from './flame'
 import type { Variation } from './variations'
 
@@ -70,6 +72,8 @@ export interface FlameControls {
    * a movement and rings out afterwards.
    */
   pulse: number
+  /** Contact state between the two hands' forms. */
+  contact?: Contact
 }
 
 /**
@@ -92,7 +96,15 @@ export function handFlame(c: FlameControls): FlameSpec {
     return idleFlame(c.time, c.energy, b)
   }
 
-  for (const hand of c.hands) {
+  const contact = c.contact ?? NO_CONTACT
+
+  c.hands.forEach((hand, handIndex) => {
+    // Push this hand's anchor away from the other one. Displacing the affine
+    // translation is what makes the forms refuse to interpenetrate — they are
+    // built around these anchors, so moving them moves the whole structure.
+    const sign = handIndex === 0 ? -1 : 1
+    const anchor = repel(hand.x, hand.y, contact, sign)
+
     // Openness maps to spiral spread over a deliberately wide range: the
     // previous 0.45..0.95 band was too narrow to feel responsive.
     // The breath term makes the spiral slowly open and close on its own; the
@@ -104,7 +116,16 @@ export function handFlame(c: FlameControls): FlameSpec {
     // the affine part by the hand position is what makes the figure grow out
     // of the hand instead of out of the origin.
     xforms.push({
-      ...affine(spin, spread, spread, hand.x, hand.y),
+      // Compression: the axis along the contact normal is squeezed while the
+      // perpendicular one bulges, so a form visibly deforms where it presses
+      // against the other instead of passing through it.
+      ...affine(
+        spin,
+        spread * (1 - contact.depth * 0.35 * Math.abs(contact.nx)),
+        spread * (1 - contact.depth * 0.35 * Math.abs(contact.ny)),
+        anchor.x,
+        anchor.y,
+      ),
       weight: 1.0,
       color: hand.colorBase,
       vars: vars([
@@ -128,8 +149,8 @@ export function handFlame(c: FlameControls): FlameSpec {
         spin * 0.6 + 0.3 + b.ch[3] * 0.3,
         contract,
         contract,
-        hand.x * 0.72,
-        hand.y * 0.72,
+        anchor.x * 0.72,
+        anchor.y * 0.72,
       ),
       weight: Math.max(0.1, 0.5 + hand.openness * 0.35 + b.ch[4] * 0.18),
       color: hand.colorBase + 0.18,
@@ -154,8 +175,8 @@ export function handFlame(c: FlameControls): FlameSpec {
           -spin * 1.1,
           0.3 + hand.energy * 0.4 + c.pulse * 0.18,
           0.3,
-          hand.x * 1.1,
-          hand.y * 1.1,
+          anchor.x * 1.1,
+          anchor.y * 1.1,
         ),
         // No constant term: the transform must be able to reach zero weight so
         // it fades out instead of popping.
@@ -168,31 +189,56 @@ export function handFlame(c: FlameControls): FlameSpec {
         ]),
       })
     }
-  }
+  })
 
   // With both hands up, one shared transform links the two clusters. It is
   // what makes the halves reach toward each other and entangle rather than
   // rendering as two independent flames in one frame.
   if (c.hands.length >= 2) {
-    const [a, b] = c.hands
-    const mx = (a.x + b.x) * 0.5
-    const my = (a.y + b.y) * 0.5
-    const between = Math.atan2(b.y - a.y, b.x - a.x)
-    const gap = Math.hypot(b.x - a.x, b.y - a.y)
-    // Closer hands bind harder, so bringing them together visibly fuses the
-    // two structures into one.
-    const bind = Math.max(0, 1 - gap / 2.2)
+    // The contact seam. Where the old version simply fused the two forms
+    // together as they approached, this behaves like a collision surface: it
+    // only appears once the forms actually meet, sits on the plane between
+    // them, and flares on impact.
+    const seamAngle = Math.atan2(contact.ny, contact.nx) + Math.PI / 2
+    const strength = contact.depth * contact.depth
 
-    xforms.push({
-      ...affine(between, 0.55 + bind * 0.3, 0.34, mx, my),
-      weight: 0.35 + bind * 0.9,
-      color: 0.55,
-      vars: vars([
-        ['linear', 0.45],
-        ['swirl', 0.3 + bind * 0.6],
-        ['spherical', 0.35],
-      ]),
-    })
+    if (strength > 0.01) {
+      xforms.push({
+        // Stretched along the seam and thin across it, so the interaction
+        // reads as a surface between the forms rather than a blob.
+        ...affine(
+          seamAngle,
+          0.28 + contact.impact * 0.5,
+          0.62 + strength * 0.4,
+          contact.mx,
+          contact.my,
+        ),
+        weight: strength * 1.1 + contact.impact * 0.8,
+        color: 0.55,
+        vars: vars([
+          // horseshoe folds the flow back on itself, which is what makes the
+          // seam look like two things pressing rather than merging.
+          ['horseshoe', 0.35 + strength * 0.4],
+          ['linear', 0.3],
+          ['swirl', contact.impact * 0.9],
+        ]),
+      })
+    }
+
+    // Impact burst: a short-lived spherical scatter at the contact point,
+    // present only during the flare so it reads as the moment of the hit.
+    if (contact.impact > 0.05) {
+      xforms.push({
+        ...affine(0, 0.4, 0.4, contact.mx, contact.my),
+        weight: contact.impact * 1.4,
+        color: 0.92,
+        vars: vars([
+          ['spherical', 0.6],
+          ['linear', 0.25],
+          ['spiral', contact.impact * 0.4],
+        ]),
+      })
+    }
   }
 
   return {
