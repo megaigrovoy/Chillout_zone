@@ -4,8 +4,6 @@ import type { HandControl } from './presets'
 import { drawSkeleton } from './skeleton'
 import { breathe } from './breathing'
 import { Pulse } from './pulse'
-import { drawAura } from './aura'
-import type { Silhouette } from '../tracking/useSegmentation'
 import { FingerTrails } from './fingerTrails'
 import type { FlameSpec } from './flame'
 import type { FractalParams } from './params'
@@ -153,7 +151,6 @@ export class FractalRenderer {
     params: FractalParams,
     hands: HandState[],
     dt: number,
-    silhouette?: Silhouette,
   ) {
     this.time += dt
 
@@ -246,20 +243,6 @@ export class FractalRenderer {
       ctx.drawImage(this.scaler, 0, 0, this.width, this.height)
     } else {
       ctx.putImageData(this.image, 0, 0)
-    }
-
-    // The aura sits furthest back of the overlays: it is the largest and
-    // softest, and the hands must read clearly in front of it.
-    if (silhouette) {
-      drawAura(
-        ctx,
-        this.width,
-        this.height,
-        silhouette,
-        this.palette,
-        this.time,
-        Math.min(1, params.energy + this.pulseLevel * 0.5),
-      )
     }
 
     // Trails go under the skeleton so the hand always reads on top of its

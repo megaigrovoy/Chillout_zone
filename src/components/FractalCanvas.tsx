@@ -3,7 +3,6 @@ import { FractalRenderer } from '../fractal/render'
 import { DEFAULT_PARAMS, easeParams, paramsFromFrame } from '../fractal/params'
 import type { FractalParams } from '../fractal/params'
 import type { TrackingFrame } from '../tracking/types'
-import type { Silhouette } from '../tracking/useSegmentation'
 
 export interface FractalHandle {
   /** Clear the accumulated drawing and the live growth front. */
@@ -12,8 +11,6 @@ export interface FractalHandle {
 
 interface Props {
   frameRef: React.RefObject<TrackingFrame>
-  /** Optional person silhouette for the aura; absent if segmentation is off. */
-  silhouetteRef?: React.RefObject<Silhouette>
   handleRef?: React.Ref<FractalHandle>
   /** Reports eased params + live tip count upward, throttled to ~5Hz. */
   onStats?: (params: FractalParams, tips: number) => void
@@ -24,7 +21,7 @@ interface Props {
  * tracking through a ref and never sets state per frame, so the component
  * mounts once and then runs entirely on rAF.
  */
-export function FractalCanvas({ frameRef, silhouetteRef, handleRef, onStats }: Props) {
+export function FractalCanvas({ frameRef, handleRef, onStats }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const paramsRef = useRef<FractalParams>(DEFAULT_PARAMS)
   const rendererRef = useRef<FractalRenderer | null>(null)
@@ -84,7 +81,7 @@ export function FractalCanvas({ frameRef, silhouetteRef, handleRef, onStats }: P
       const target = paramsFromFrame(frame)
       paramsRef.current = easeParams(paramsRef.current, target, dt)
 
-      renderer.render(ctx, paramsRef.current, frame.hands, dt, silhouetteRef?.current ?? undefined)
+      renderer.render(ctx, paramsRef.current, frame.hands, dt)
 
       if (onStatsRef.current && now - lastReport > 200) {
         lastReport = now
@@ -98,7 +95,7 @@ export function FractalCanvas({ frameRef, silhouetteRef, handleRef, onStats }: P
       observer.disconnect()
       rendererRef.current = null
     }
-  }, [frameRef, silhouetteRef])
+  }, [frameRef])
 
   return <canvas ref={canvasRef} className="fractal-canvas" />
 }
