@@ -6,6 +6,8 @@ import { breathe } from './breathing'
 import { Pulse } from './pulse'
 import { CollisionTracker, NO_CONTACT } from './collision'
 import { FingerTrails } from './fingerTrails'
+import { drawFaceMesh } from './faceMesh'
+import type { FaceState } from '../tracking/useFaceTracking'
 import type { FlameSpec } from './flame'
 import type { FractalParams } from './params'
 import type { HandState } from '../tracking/types'
@@ -154,6 +156,7 @@ export class FractalRenderer {
     params: FractalParams,
     hands: HandState[],
     dt: number,
+    face?: FaceState | null,
   ) {
     this.time += dt
 
@@ -266,6 +269,20 @@ export class FractalRenderer {
       ctx.drawImage(this.scaler, 0, 0, this.width, this.height)
     } else {
       ctx.putImageData(this.image, 0, 0)
+    }
+
+    // The face sits behind the hands: it is a slower, quieter element and the
+    // hands are what the player is actively steering with.
+    if (face) {
+      drawFaceMesh(
+        ctx,
+        this.width,
+        this.height,
+        face,
+        this.palette,
+        this.time,
+        Math.min(1, params.energy + this.pulseLevel * 0.5),
+      )
     }
 
     // Trails go under the skeleton so the hand always reads on top of its

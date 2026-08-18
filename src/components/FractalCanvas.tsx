@@ -3,6 +3,7 @@ import { FractalRenderer } from '../fractal/render'
 import { DEFAULT_PARAMS, easeParams, paramsFromFrame } from '../fractal/params'
 import type { FractalParams } from '../fractal/params'
 import type { TrackingFrame } from '../tracking/types'
+import type { FaceFrame } from '../tracking/useFaceTracking'
 
 export interface FractalHandle {
   /** Clear the accumulated drawing and the live growth front. */
@@ -11,6 +12,8 @@ export interface FractalHandle {
 
 interface Props {
   frameRef: React.RefObject<TrackingFrame>
+  /** Optional face landmarks; absent if face tracking failed to start. */
+  faceRef?: React.RefObject<FaceFrame>
   handleRef?: React.Ref<FractalHandle>
   /** Reports eased params + live tip count upward, throttled to ~5Hz. */
   onStats?: (params: FractalParams, tips: number) => void
@@ -21,7 +24,7 @@ interface Props {
  * tracking through a ref and never sets state per frame, so the component
  * mounts once and then runs entirely on rAF.
  */
-export function FractalCanvas({ frameRef, handleRef, onStats }: Props) {
+export function FractalCanvas({ frameRef, faceRef, handleRef, onStats }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const paramsRef = useRef<FractalParams>(DEFAULT_PARAMS)
   const rendererRef = useRef<FractalRenderer | null>(null)
@@ -81,7 +84,7 @@ export function FractalCanvas({ frameRef, handleRef, onStats }: Props) {
       const target = paramsFromFrame(frame)
       paramsRef.current = easeParams(paramsRef.current, target, dt)
 
-      renderer.render(ctx, paramsRef.current, frame.hands, dt)
+      renderer.render(ctx, paramsRef.current, frame.hands, dt, faceRef?.current?.face)
 
       if (onStatsRef.current && now - lastReport > 200) {
         lastReport = now
@@ -95,7 +98,7 @@ export function FractalCanvas({ frameRef, handleRef, onStats }: Props) {
       observer.disconnect()
       rendererRef.current = null
     }
-  }, [frameRef])
+  }, [frameRef, faceRef])
 
   return <canvas ref={canvasRef} className="fractal-canvas" />
 }

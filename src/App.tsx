@@ -4,6 +4,7 @@ import type { FractalHandle } from './components/FractalCanvas'
 import { ParticleCanvas } from './components/ParticleCanvas'
 import type { ParticleHandle } from './components/ParticleCanvas'
 import { useHandTracking } from './tracking/useHandTracking'
+import { useFaceTracking } from './tracking/useFaceTracking'
 import type { FractalParams } from './fractal/params'
 import './App.css'
 
@@ -26,7 +27,8 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const fractalRef = useRef<FractalHandle | null>(null)
   const particleRef = useRef<ParticleHandle | null>(null)
-  const { status, frameRef, start, stop } = useHandTracking(videoRef)
+  const { status, frameRef, start: startHands, stop: stopHands } = useHandTracking(videoRef)
+  const { faceRef, start: startFace, stop: stopFace } = useFaceTracking(videoRef)
   const [stats, setStats] = useState<Stats | null>(null)
   const [showDebug, setShowDebug] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
@@ -68,6 +70,19 @@ export default function App() {
     [showDebug],
   )
 
+  // Face tracking shares the video element, so it can only begin once hand
+  // tracking has the camera running. It is skipped entirely in collision mode:
+  // that mode does not draw the face, and the model is not free to run.
+  const start = useCallback(async () => {
+    await startHands()
+    if (mode === 'flame') startFace()
+  }, [startHands, startFace, mode])
+
+  const stop = useCallback(() => {
+    stopFace()
+    stopHands()
+  }, [stopFace, stopHands])
+
   const resetScene = useCallback(() => {
     fractalRef.current?.reset()
     particleRef.current?.reset()
@@ -76,7 +91,12 @@ export default function App() {
   return (
     <div className="app">
       {mode === 'flame' ? (
-        <FractalCanvas frameRef={frameRef} handleRef={fractalRef} onStats={handleStats} />
+        <FractalCanvas
+          frameRef={frameRef}
+          faceRef={faceRef}
+          handleRef={fractalRef}
+          onStats={handleStats}
+        />
       ) : (
         <ParticleCanvas
           frameRef={frameRef}
@@ -125,6 +145,7 @@ export default function App() {
                   <li>Раскрытая ладонь — спираль раскрывается и закручивается</li>
                   <li>Резкое движение — из руки выбрасываются нити</li>
                   <li>Поворот кисти вращает свою половину фигуры</li>
+                  <li>Лицо подсвечивается тем же переливающимся контуром</li>
                 </>
               ) : (
                 <>
