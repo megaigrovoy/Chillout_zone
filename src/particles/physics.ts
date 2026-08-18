@@ -12,26 +12,57 @@
  * generate enough garbage to show up as GC stutter.
  */
 
-export const MAX_PARTICLES = 2600
-
 /**
- * Uniform particle radius, px. Uniform because it makes the broad-phase grid
- * cell size trivially correct: no particle can span more than two cells.
+ * Raised along with the smaller radius: fine droplets only read as a fluid if
+ * there are enough of them to form a continuous body.
  */
-export const RADIUS = 3.2
-
-/** Restitution: 1 = perfectly elastic, 0 = fully inelastic. */
-const RESTITUTION = 0.82
+export const MAX_PARTICLES = 5200
 
 /**
- * Velocity damping per second.
+ * Uniform particle radius, px. Uniform because it keeps the broad-phase grid
+ * cell size trivially correct.
+ */
+export const RADIUS = 1.6
+
+/**
+ * Restitution: 1 = perfectly elastic, 0 = fully inelastic.
  *
- * Kept mild: at 0.55 a dense pack settled to 1px/s within ten seconds, so the
- * particles went inert the moment the hands stopped pushing and collisions
- * stopped happening. This retains most of the motion while still preventing
- * the population from accumulating energy indefinitely.
+ * Low, because a fluid does not bounce — droplets meeting head-on should lose
+ * their relative motion and travel together, not ping apart.
  */
-const DRAG = 0.90
+const RESTITUTION = 0.18
+
+/**
+ * Velocity damping per second. Stronger than a gas would need: viscous fluid
+ * carries momentum poorly, and the drag is what makes motion feel resisted.
+ */
+const DRAG = 0.55
+
+/**
+ * Range over which particles attract each other, as a multiple of RADIUS.
+ *
+ * This is what turns a cloud of colliding balls into something cohesive.
+ * Contact forces alone cannot do it: they only ever push apart, so a pile of
+ * particles disperses. Attraction at a distance is what holds a body together
+ * and lets it stretch into strands instead of scattering.
+ */
+const COHESION_RANGE = 8.0
+
+/**
+ * Strength of that mutual attraction, px/s per second.
+ *
+ * Sized against the drag, which removes 45% of velocity per second: at 190
+ * with a squared falloff the effective pull at typical droplet spacing was
+ * only 8.9px/s^2 and friction simply ate it, so the fluid never gathered.
+ */
+const COHESION = 900
+
+/**
+ * Viscosity: how strongly neighbours pull each other toward a common
+ * velocity. This is the property that actually reads as "thick" — without it
+ * a cohesive fluid still slides through itself like dry sand.
+ */
+const VISCOSITY = 14
 
 export class ParticleSystem {
   x = new Float32Array(MAX_PARTICLES)
@@ -54,7 +85,10 @@ export class ParticleSystem {
    * frame, far past the budget. The grid reduces it to each particle against
    * only those in the neighbouring cells.
    */
-  private cellSize = RADIUS * 2
+  // The cell must cover the longest interaction range, not just contact:
+  // sized to the collision diameter, cohesion neighbours would fall outside
+  // the searched 3x3 block and the fluid would never bind.
+  private cellSize = RADIUS * COHESION_RANGE
   private cols = 0
   private rows = 0
   private cellStart: Int32Array = new Int32Array(0)
@@ -140,14 +174,18 @@ export class ParticleSystem {
    *
    * @returns total impulse exchanged, used to drive the visual impact flash.
    */
-  collide(width: number, height: number): number {
+  collide(width: number, height: number, dt = 1 / 60): number {
     if (this.count < 2) return 0
+    // Cached because it is read inside the innermost loop.
+    const dtCache = dt
 
     this.rebuildGrid(width, height)
 
     let totalImpulse = 0
     const minDist = RADIUS * 2
     const minDistSq = minDist * minDist
+    const cohesionDist = RADIUS * COHESION_RANGE
+    const cohesionDistSq = cohesionDist * cohesionDist
 
     for (let i = 0; i < this.count; i++) {
       const cx = (this.x[i] / this.cellSize) | 0
@@ -172,11 +210,39 @@ export class ParticleSystem {
             const dx = this.x[j] - this.x[i]
             const dy = this.y[j] - this.y[i]
             const distSq = dx * dx + dy * dy
-            if (distSq >= minDistSq || distSq === 0) continue
+            if (distSq === 0 || distSq >= cohesionDistSq) continue
 
             const dist = Math.sqrt(distSq)
             const nxn = dx / dist
             const nyn = dy / dist
+
+            // Cohesion and viscosity act across the whole neighbourhood, not
+            // only on touching pairs — that is the difference between a fluid
+            // and a bag of marbles.
+            if (distSq >= minDistSq) {
+              // Linear falloff, not squared: squaring collapsed the force to
+              // near nothing across most of the interaction band, leaving
+              // attraction only for droplets already touching.
+              const falloff = 1 - dist / cohesionDist
+              const pull = COHESION * falloff * dtCache
+              this.vx[i] += nxn * pull
+              this.vy[i] += nyn * pull
+              this.vx[j] -= nxn * pull
+              this.vy[j] -= nyn * pull
+
+              // Viscosity: drag neighbouring velocities toward each other.
+              // Clamped: with a large VISCOSITY and a long frame this could
+              // otherwise overshoot past the shared velocity and oscillate,
+              // adding energy instead of removing it.
+              const visc = Math.min(0.5, VISCOSITY * falloff * dtCache)
+              const dvx = (this.vx[j] - this.vx[i]) * visc
+              const dvy = (this.vy[j] - this.vy[i]) * visc
+              this.vx[i] += dvx
+              this.vy[i] += dvy
+              this.vx[j] -= dvx
+              this.vy[j] -= dvy
+              continue
+            }
 
             // Relative velocity along the normal; positive means separating,
             // and separating pairs must not be "resolved" again or they gain
@@ -204,7 +270,7 @@ export class ParticleSystem {
 
             // Brighten both on contact; this is what makes collisions visible
             // rather than merely correct.
-            const f = Math.min(1, Math.abs(impulse) * 0.006)
+            const f = Math.min(1, Math.abs(impulse) * 0.02)
             if (f > this.flash[i]) this.flash[i] = f
             if (f > this.flash[j]) this.flash[j] = f
           }

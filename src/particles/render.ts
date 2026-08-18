@@ -46,7 +46,7 @@ export class ParticleRenderer {
     this.applyHandForces(hands, dt)
     this.sys.integrate(dt, width, height)
 
-    const impulse = this.sys.collide(width, height)
+    const impulse = this.sys.collide(width, height, dt)
     // Normalise by count so the global flash reflects collision *intensity*
     // rather than merely how many particles are on screen.
     const perParticle = this.sys.count > 0 ? impulse / this.sys.count : 0
@@ -68,7 +68,7 @@ export class ParticleRenderer {
     hands.forEach((hand, index) => {
       this.emitCooldown[index] = (this.emitCooldown[index] ?? 0) - dt
       if (this.emitCooldown[index] > 0) return
-      this.emitCooldown[index] = 0.012 - hand.openness * 0.008
+      this.emitCooldown[index] = 0.010 - hand.openness * 0.007
 
       const cx = (1 - hand.center.x) * this.width
       const cy = hand.center.y * this.height
@@ -80,17 +80,22 @@ export class ParticleRenderer {
       const hvx = -hand.velocity.x * this.width * 0.6
       const hvy = hand.velocity.y * this.height * 0.6
 
-      const burst = 3
+      // More droplets per burst, launched slower: a viscous fluid oozes out
+      // and stays together rather than spraying.
+      const burst = 6
       for (let k = 0; k < burst; k++) {
         const a = Math.random() * Math.PI * 2
-        const speed = 60 + Math.random() * 190 + hand.openness * 120
+        const speed = 25 + Math.random() * 80 + hand.openness * 60
+        // Emitted from a tight ring so the droplets start already in contact
+        // and cohere immediately instead of having to find each other.
+        const r = 6 + Math.random() * 8
         this.sys.spawn(
-          cx + Math.cos(a) * 14,
-          cy + Math.sin(a) * 14,
+          cx + Math.cos(a) * r,
+          cy + Math.sin(a) * r,
           Math.cos(a) * speed + hvx,
           Math.sin(a) * speed + hvy,
           hue,
-          2.4 + Math.random() * 2.2,
+          3.4 + Math.random() * 2.6,
         )
       }
     })
@@ -154,11 +159,16 @@ export class ParticleRenderer {
       // sparks against the coloured streams.
       const l = 55 + f * 40
       const s = 95 - f * 55
-      const a = (0.22 + f * 0.6) * age
+      // Lower per-droplet alpha, since there are far more of them and they
+      // overlap: additive blending would otherwise blow the body out to white.
+      const a = (0.13 + f * 0.5) * age
 
+      // Drawn wider than the physical radius so neighbouring droplets overlap
+      // into a continuous body. At the physical size these would read as grains
+      // of sand rather than as a fluid.
       ctx.fillStyle = `hsla(${hue[i]}, ${s}%, ${l}%, ${a})`
       ctx.beginPath()
-      ctx.arc(x[i], y[i], RADIUS * (1 + f * 1.6), 0, Math.PI * 2)
+      ctx.arc(x[i], y[i], RADIUS * 2.3 * (1 + f * 1.2), 0, Math.PI * 2)
       ctx.fill()
     }
 
