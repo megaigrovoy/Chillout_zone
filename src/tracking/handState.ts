@@ -43,9 +43,8 @@ export function deriveHandState(
   // degenerate frame would otherwise produce Infinity openness downstream.
   const scale = Math.max(dist(wrist, middle), 1e-4)
 
-  // Fingertips are used only to measure how open the hand is; they are no
-  // longer exposed, since the visuals emit from the palm alone and per-finger
-  // tracking noise would only jitter the figure.
+  // Fingertips drive the openness measure; the full landmark set is passed
+  // through for skeleton drawing.
   const spread =
     TIPS.reduce((sum, i) => sum + dist(landmarks[i], center), 0) / TIPS.length / scale
   const openness = clamp01((spread - OPENNESS_MIN) / (OPENNESS_MAX - OPENNESS_MIN))
@@ -67,7 +66,9 @@ export function deriveHandState(
     }
   }
 
-  return { handedness, center, openness, rotation, scale, velocity }
+  const points = landmarks.map((l) => ({ x: l.x, y: l.y }))
+
+  return { handedness, center, landmarks: points, openness, rotation, scale, velocity }
 }
 
 /**

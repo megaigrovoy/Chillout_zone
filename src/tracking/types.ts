@@ -15,6 +15,11 @@ export interface HandState {
   /** Palm centre, normalized video coords. */
   center: Point2
   /**
+   * All 21 MediaPipe landmarks, smoothed. Needed to draw the hand skeleton;
+   * the visuals themselves still only consume the reduced signals below.
+   */
+  landmarks: Point2[]
+  /**
    * 0 = fist, 1 = fully splayed. Derived from mean fingertip distance to the
    * palm centre, normalized by hand size so it survives moving toward/away
    * from the camera.

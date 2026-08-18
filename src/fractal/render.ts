@@ -1,6 +1,7 @@
 import { Histogram, iterate, toneMap } from './flame'
 import { handFlame, buildPalette } from './presets'
 import type { HandControl } from './presets'
+import { drawSkeleton } from './skeleton'
 import type { FlameSpec } from './flame'
 import type { FractalParams } from './params'
 import type { HandState } from '../tracking/types'
@@ -156,26 +157,8 @@ export class FractalRenderer {
     toneMap(this.hist, this.image, 2.2, 1.6)
     ctx.putImageData(this.image, 0, 0)
 
-    for (const h of hands) drawCursor(ctx, this.width, this.height, h, params)
+    for (const h of hands) {
+      drawSkeleton(ctx, this.width, this.height, h, this.palette, this.time, params.energy)
+    }
   }
-}
-
-/** Palm ring, so the player can see the app is tracking them. */
-function drawCursor(
-  ctx: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  hand: HandState,
-  params: FractalParams,
-) {
-  const cx = (1 - hand.center.x) * width
-  const cy = hand.center.y * height
-  const hue = hand.handedness === 'Left' ? 195 : 300
-  ctx.globalCompositeOperation = 'lighter'
-  ctx.strokeStyle = `hsla(${hue}, 90%, 75%, ${0.22 + params.energy * 0.2})`
-  ctx.lineWidth = 2
-  ctx.beginPath()
-  ctx.arc(cx, cy, 18 + hand.openness * 30, 0, Math.PI * 2)
-  ctx.stroke()
-  ctx.globalCompositeOperation = 'source-over'
 }
