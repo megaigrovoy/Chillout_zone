@@ -16,6 +16,15 @@ const MODEL_URL =
 const TRACE_W = 160
 const TRACE_H = 120
 
+/**
+ * Category index the selfie model assigns to the person.
+ *
+ * The model emits 0 for the subject and 255 for the background, which is the
+ * reverse of what one would guess; treating it the other way round outlines
+ * the entire frame border instead of the body.
+ */
+const PERSON_CATEGORY = 0
+
 export interface Silhouette {
   /**
    * Occupancy grid at TRACE_W x TRACE_H: 1 where a person is, 0 elsewhere.
@@ -54,8 +63,6 @@ export function useSegmentation(videoRef: React.RefObject<HTMLVideoElement | nul
   const segmenterRef = useRef<ImageSegmenter | null>(null)
   const rafRef = useRef<number | null>(null)
   const activeRef = useRef(false)
-  /** Scratch canvas used to downscale the mask before reading it back. */
-  const scratchRef = useRef<{ c: HTMLCanvasElement; ctx: CanvasRenderingContext2D } | null>(null)
 
   const stop = useCallback(() => {
     activeRef.current = false
@@ -87,13 +94,6 @@ export function useSegmentation(videoRef: React.RefObject<HTMLVideoElement | nul
       }
       segmenterRef.current = segmenter
 
-      const c = document.createElement('canvas')
-      c.width = TRACE_W
-      c.height = TRACE_H
-      const sctx = c.getContext('2d', { willReadFrequently: true })
-      if (!sctx) throw new Error('2D context unavailable for mask scratch')
-      scratchRef.current = { c, ctx: sctx }
-
       let lastVideoTime = -1
       let lastRun = 0
       // Segmentation is the expensive half of the vision pipeline, and the aura
@@ -106,8 +106,7 @@ export function useSegmentation(videoRef: React.RefObject<HTMLVideoElement | nul
 
         const el = videoRef.current
         const seg = segmenterRef.current
-        const scratch = scratchRef.current
-        if (!el || !seg || !scratch || el.readyState < 2) return
+        if (!el || !seg || el.readyState < 2) return
 
         const now = performance.now()
         if (now - lastRun < INTERVAL) return
@@ -120,24 +119,38 @@ export function useSegmentation(videoRef: React.RefObject<HTMLVideoElement | nul
         if (!mask) return
 
         try {
-          // Draw the mask's backing canvas scaled down, then read it back once.
-          // Reading the full-size mask directly would mean a GPU-to-CPU
-          // transfer of the whole frame every time.
-          const src = mask.canvas
-          if (src) {
-            scratch.ctx.clearRect(0, 0, TRACE_W, TRACE_H)
-            scratch.ctx.drawImage(src as CanvasImageSource, 0, 0, TRACE_W, TRACE_H)
-            const data = scratch.ctx.getImageData(0, 0, TRACE_W, TRACE_H).data
+          // Read the mask as an explicit array rather than going through
+          // mask.canvas: that canvas belongs to the MediaPipe task and is not
+          // a ready-to-draw image of the mask, and the mask may live as a
+          // WebGL texture with no canvas at all.
+          const raw = mask.getAsUint8Array()
+          const mw = mask.width
+          const mh = mask.height
 
+          if (raw.length >= mw * mh) {
             const grid = silhouetteRef.current.grid
-            for (let i = 0; i < grid.length; i++) {
-              // The selfie model marks background as category 0; anything else
-              // is the person. The mask is drawn into the red channel.
-              const v = data[i * 4]
-              // Ease toward the new value so the outline breathes rather than
-              // snapping between segmentation frames.
-              const target = v > 0 ? 1 : 0
-              grid[i] += (target - grid[i]) * 0.5
+
+            // Nearest-neighbour downsample into the trace grid. The mask is
+            // one byte per pixel holding a category index.
+            for (let y = 0; y < TRACE_H; y++) {
+              const sy = ((y * mh) / TRACE_H) | 0
+              const srow = sy * mw
+              const drow = y * TRACE_W
+              for (let x = 0; x < TRACE_W; x++) {
+                const sx = ((x * mw) / TRACE_W) | 0
+                // selfie_segmenter labels the PERSON as category 0 and the
+                // background as 255 — the opposite of the intuitive reading,
+                // and getting it backwards outlines the whole frame instead
+                // of the body.
+                const target = raw[srow + sx] === PERSON_CATEGORY ? 1 : 0
+                const i = drow + x
+                // Ease toward the new value so the outline settles smoothly
+                // between segmentation frames.
+                grid[i] += (target - grid[i]) * 0.5
+              }
+            }
+            if (!silhouetteRef.current.ready) {
+              console.info(`[chillout] segmentation active (mask ${mw}x${mh})`)
             }
             silhouetteRef.current.ready = true
             silhouetteRef.current.stamp++
@@ -150,10 +163,13 @@ export function useSegmentation(videoRef: React.RefObject<HTMLVideoElement | nul
       }
 
       rafRef.current = requestAnimationFrame(tick)
-    } catch {
+    } catch (err) {
       // The aura is decorative: if segmentation cannot start (model fetch
       // blocked, no GPU delegate), the app keeps working without it rather
-      // than surfacing an error over the whole experience.
+      // than surfacing an error over the whole experience. It is still logged,
+      // because a silent failure here is indistinguishable from the effect
+      // simply not being implemented.
+      console.warn('[chillout] segmentation unavailable, aura disabled:', err)
       activeRef.current = false
     }
   }, [videoRef])
