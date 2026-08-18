@@ -200,10 +200,10 @@ export function handFlame(c: FlameControls): FlameSpec {
     // A mild eyefish final transform curves the whole figure outward, which is
     // what gives flames their characteristic bulge instead of a flat disc.
     final: {
-      // The final transform carries the slow global rotation plus a small
-      // oscillating term, which drifts the entire figure without changing its
-      // internal structure.
-      ...affine(b.spin + b.ch[4] * 0.25, 1, 1, 0, 0),
+      // A small oscillating tilt, which drifts the figure without changing its
+      // internal structure. Deliberately an oscillation and not a continuous
+      // turn: the figure should waver, not revolve.
+      ...affine(b.ch[4] * 0.25, 1, 1, 0, 0),
       weight: 1,
       color: 0,
       vars: vars([
@@ -217,7 +217,7 @@ export function handFlame(c: FlameControls): FlameSpec {
 
 /** Slowly drifting figure shown when no hands are visible. */
 function idleFlame(time: number, energy: number, b: ReturnType<typeof breathe>): FlameSpec {
-  const spin = time * 0.12 + b.spin
+  const spin = time * 0.12
   const spread = 0.6 + b.ch[0] * 0.3
   return {
     xforms: [
@@ -241,7 +241,7 @@ function idleFlame(time: number, energy: number, b: ReturnType<typeof breathe>):
       },
     ],
     final: {
-      ...affine(b.spin, 1, 1, 0, 0),
+      ...affine(0, 1, 1, 0, 0),
       weight: 1,
       color: 0,
       vars: vars([

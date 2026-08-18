@@ -20,14 +20,6 @@ export interface Breath {
   /** Six independent oscillators in -1..1. */
   ch: number[]
   /**
-   * Monotonically advancing rotation for the whole figure, radians.
-   *
-   * Deliberately not an oscillator: a swinging angle reads as the figure
-   * rocking back and forth, while continuous advance reads as drift. The rate
-   * itself is modulated slightly so it never becomes a metronomic spin.
-   */
-  spin: number
-  /**
    * A slow global swell in 0..1, used for whole-figure intensity. Distinct
    * from the channels because it must never sit at zero for long — that would
    * read as the figure dying rather than breathing.
@@ -56,17 +48,5 @@ export function breathe(t: number, amount: number): Breath {
   const s = Math.sin((t / 13.7) * Math.PI * 2) * 0.5 + 0.5
   const swell = 1 - (1 - s) * 0.45 * amount
 
-  // Base drift of ~1 revolution per 100s, with the rate itself wavering so
-  // the motion never settles into a constant, mechanical turn. Integrating
-  // the varying rate in closed form (rather than accumulating per frame)
-  // keeps the angle identical regardless of framerate or dropped frames.
-  const BASE_RATE = (Math.PI * 2) / 100
-  const WOBBLE_PERIOD = 29.3
-  const wobble =
-    (WOBBLE_PERIOD / (Math.PI * 2)) *
-    Math.sin((t / WOBBLE_PERIOD) * Math.PI * 2) *
-    0.45
-  const spin = (t + wobble) * BASE_RATE * amount
-
-  return { ch, swell, spin }
+  return { ch, swell }
 }
