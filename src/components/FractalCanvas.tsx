@@ -40,9 +40,11 @@ export function FractalCanvas({ frameRef, handleRef, onStats }: Props) {
     let last = performance.now()
     let lastReport = 0
 
-    // Cap the backing store at 2x: on a 4K display a full-DPR canvas doing
-    // additive blending over thousands of segments will not hold 60fps.
-    const dpr = Math.min(window.devicePixelRatio || 1, 2)
+    // The flame renderer writes pixels directly via putImageData, whose cost
+    // is per backing-store pixel and which ignores canvas transforms. A full
+    // DPR buffer would quadruple the tone-mapping work for no visible gain, so
+    // the histogram is kept at CSS resolution.
+    const dpr = 1
 
     const sizeOf = () => ({
       w: Math.max(1, Math.floor(canvas.clientWidth)),
@@ -54,7 +56,7 @@ export function FractalCanvas({ frameRef, handleRef, onStats }: Props) {
       canvas.width = Math.floor(w * dpr)
       canvas.height = Math.floor(h * dpr)
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-      return { w, h }
+      return { w: canvas.width, h: canvas.height }
     }
 
     const initial = applySize()
@@ -71,7 +73,7 @@ export function FractalCanvas({ frameRef, handleRef, onStats }: Props) {
       raf = requestAnimationFrame(loop)
       const now = performance.now()
       // Clamping dt keeps a backgrounded tab from resuming with one enormous
-      // step that would fling every growth tip off screen at once.
+      // step that would decay the whole histogram away in a single frame.
       const dt = Math.min((now - last) / 1000, 0.05)
       last = now
 
