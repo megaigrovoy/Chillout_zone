@@ -90,6 +90,25 @@
   cursor: progress;
 }
 
+.ghost {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 10px 18px;
+  border-radius: 12px;
+  border: 1px solid rgba(140, 170, 255, 0.25);
+  background: transparent;
+  color: #9fb0d4;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.ghost:hover {
+  border-color: rgba(140, 170, 255, 0.5);
+  color: #d7deef;
+}
+
 .error {
   margin: 0 0 16px;
   padding: 12px 14px;
