@@ -1,4 +1,5 @@
 import { VARIATIONS } from './variations'
+import { breathe } from './breathing'
 import type { XForm, FlameSpec } from './flame'
 import type { Variation } from './variations'
 
@@ -57,8 +58,13 @@ export interface HandControl {
 export interface FlameControls {
   hands: HandControl[]
   energy: number
-  /** Seconds since start, for the idle drift. */
+  /** Seconds since start, driving the breathing oscillators. */
   time: number
+  /**
+   * 0..1 depth of the slow parameter drift. 0 freezes the figure whenever the
+   * hands are still; 1 gives the strongest wander.
+   */
+  breath: number
 }
 
 /**
@@ -72,15 +78,21 @@ export interface FlameControls {
 export function handFlame(c: FlameControls): FlameSpec {
   const xforms: XForm[] = []
 
+  // Breathing is damped while the hands are moving: during a gesture the
+  // player's own motion supplies the life, and layering drift on top of it
+  // just muddies the response.
+  const b = breathe(c.time, c.breath * (1 - Math.min(c.energy, 0.7) * 0.6))
+
   if (c.hands.length === 0) {
-    return idleFlame(c.time, c.energy)
+    return idleFlame(c.time, c.energy, b)
   }
 
   for (const hand of c.hands) {
     // Openness maps to spiral spread over a deliberately wide range: the
     // previous 0.45..0.95 band was too narrow to feel responsive.
-    const spread = 0.28 + hand.openness * 0.72
-    const spin = hand.rotation
+    // The breath term makes the spiral slowly open and close on its own.
+    const spread = 0.28 + hand.openness * 0.72 + b.ch[0] * 0.14
+    const spin = hand.rotation + b.ch[1] * 0.22
 
     // The julia transform anchored at the hand — the spiral arms. Translating
     // the affine part by the hand position is what makes the figure grow out
@@ -91,29 +103,33 @@ export function handFlame(c: FlameControls): FlameSpec {
       color: hand.colorBase,
       vars: vars([
         ['julia', 1.0],
-        ['spiral', 0.04 + hand.energy * 0.22],
+        // Drifting variation weights are what actually reshape the figure;
+        // modulating only brightness would look like a light flickering on a
+        // static object rather than the object itself moving.
+        ['spiral', Math.max(0, 0.04 + hand.energy * 0.22 + b.ch[2] * 0.09)],
         // Openness swaps in swirl, which visibly churns the arms when the
         // hand opens — a much stronger read than a scale change alone.
-        ['swirl', hand.openness * 0.35],
+        ['swirl', Math.max(0, hand.openness * 0.35 + b.ch[3] * 0.13)],
       ]),
     })
 
     // A contracting transform that keeps density near the hand, so each hand
     // has a bright core the structure radiates from.
+    const contract = 0.36 + hand.openness * 0.22 + b.ch[2] * 0.05
     xforms.push({
       ...affine(
-        spin * 0.6 + 0.3,
-        0.36 + hand.openness * 0.22,
-        0.36 + hand.openness * 0.22,
+        spin * 0.6 + 0.3 + b.ch[3] * 0.3,
+        contract,
+        contract,
         hand.x * 0.72,
         hand.y * 0.72,
       ),
-      weight: 0.5 + hand.openness * 0.35,
+      weight: Math.max(0.1, 0.5 + hand.openness * 0.35 + b.ch[4] * 0.18),
       color: hand.colorBase + 0.18,
       vars: vars([
         ['linear', 0.62],
-        ['spherical', 0.2 + hand.openness * 0.4],
-        ['disc', hand.energy * 0.3],
+        ['spherical', Math.max(0, 0.2 + hand.openness * 0.4 + b.ch[5] * 0.12)],
+        ['disc', Math.max(0, hand.energy * 0.3 + b.ch[0] * 0.08)],
       ]),
     })
 
@@ -163,11 +179,13 @@ export function handFlame(c: FlameControls): FlameSpec {
     // A mild eyefish final transform curves the whole figure outward, which is
     // what gives flames their characteristic bulge instead of a flat disc.
     final: {
-      ...affine(0, 1, 1, 0, 0),
+      // The final transform rotates very slowly, which drifts the entire
+      // figure without changing its internal structure.
+      ...affine(b.ch[4] * 0.25, 1, 1, 0, 0),
       weight: 1,
       color: 0,
       vars: vars([
-        ['eyefish', 0.18 + c.energy * 0.2],
+        ['eyefish', Math.max(0, 0.18 + c.energy * 0.2 + b.ch[5] * 0.07)],
         ['linear', 0.85],
       ]),
     },
@@ -175,9 +193,9 @@ export function handFlame(c: FlameControls): FlameSpec {
 }
 
 /** Slowly drifting figure shown when no hands are visible. */
-function idleFlame(time: number, energy: number): FlameSpec {
+function idleFlame(time: number, energy: number, b: ReturnType<typeof breathe>): FlameSpec {
   const spin = time * 0.12
-  const spread = 0.6 + Math.sin(time * 0.2) * 0.25
+  const spread = 0.6 + b.ch[0] * 0.3
   return {
     xforms: [
       {
@@ -186,7 +204,7 @@ function idleFlame(time: number, energy: number): FlameSpec {
         color: 0.1,
         vars: vars([
           ['julia', 1.0],
-          ['spiral', 0.08],
+          ['spiral', Math.max(0, 0.08 + b.ch[2] * 0.06)],
         ]),
       },
       {
@@ -195,7 +213,7 @@ function idleFlame(time: number, energy: number): FlameSpec {
         color: 0.55,
         vars: vars([
           ['linear', 0.7],
-          ['swirl', 0.4],
+          ['swirl', Math.max(0, 0.4 + b.ch[3] * 0.2)],
         ]),
       },
     ],

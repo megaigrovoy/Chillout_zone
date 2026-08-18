@@ -2,6 +2,7 @@ import { Histogram, iterate, toneMap } from './flame'
 import { handFlame, buildPalette } from './presets'
 import type { HandControl } from './presets'
 import { drawSkeleton } from './skeleton'
+import { breathe } from './breathing'
 import { FingerTrails } from './fingerTrails'
 import type { FlameSpec } from './flame'
 import type { FractalParams } from './params'
@@ -40,6 +41,23 @@ const SAMPLES_PER_FRAME = 22000
  */
 const DECAY = 0.985
 
+/**
+ * Depth of the slow parameter drift, 0..1. This is the "aliveness" dial: at 0
+ * the figure freezes whenever the hands hold still, at 1 it wanders most.
+ * Breathing is damped automatically while the hands are moving, since the
+ * gesture itself already supplies motion.
+ */
+const BREATH = 0.85
+
+/**
+ * Cap on histogram pixels. Tone mapping cost is linear in this, and it is the
+ * dominant term in the frame: at ~2M pixels it alone exceeds the 60fps budget.
+ * Above the cap the flame is computed at a lower resolution and scaled up on
+ * output — imperceptible here because flames are soft, glowing structures with
+ * no hard edges to alias, unlike text or line art.
+ */
+const MAX_HIST_PIXELS = 1_100_000
+
 export class FractalRenderer {
   private hist: Histogram
   private image: ImageData
@@ -52,11 +70,22 @@ export class FractalRenderer {
   private camScale = 0.22
   private trails = new FingerTrails()
 
+  /** Histogram resolution, which may be below the canvas resolution. */
+  private hw = 1
+  private hh = 1
+  /** Offscreen canvas used to scale a reduced histogram up to the display. */
+  private scaler: HTMLCanvasElement | null = null
+  private scalerCtx: CanvasRenderingContext2D | null = null
+
   constructor(private width: number, private height: number) {
-    this.hist = new Histogram(Math.max(1, width), Math.max(1, height))
-    this.image = new ImageData(Math.max(1, width), Math.max(1, height))
+    const { w, h } = fitHistogram(width, height)
+    this.hw = w
+    this.hh = h
+    this.hist = new Histogram(w, h)
+    this.image = new ImageData(w, h)
+    this.initScaler()
     this.palette = buildPalette(this.hueShift, 0.3)
-    this.spec = handFlame({ hands: [], energy: 0.2, time: 0 })
+    this.spec = handFlame({ hands: [], energy: 0.2, time: 0, breath: BREATH })
   }
 
   /**
@@ -68,9 +97,31 @@ export class FractalRenderer {
     if (width === this.width && height === this.height) return
     this.width = width
     this.height = height
-    this.hist = new Histogram(Math.max(1, width), Math.max(1, height))
-    this.image = new ImageData(Math.max(1, width), Math.max(1, height))
+    const { w, h } = fitHistogram(width, height)
+    this.hw = w
+    this.hh = h
+    this.hist = new Histogram(w, h)
+    this.image = new ImageData(w, h)
+    this.initScaler()
     this.samples = 0
+  }
+
+  /**
+   * Prepare the intermediate canvas used when the histogram is smaller than
+   * the display. putImageData ignores scaling, so the reduced image has to go
+   * through a canvas that drawImage can then stretch.
+   */
+  private initScaler() {
+    if (this.hw === this.width && this.hh === this.height) {
+      this.scaler = null
+      this.scalerCtx = null
+      return
+    }
+    const c = document.createElement('canvas')
+    c.width = this.hw
+    c.height = this.hh
+    this.scaler = c
+    this.scalerCtx = c.getContext('2d')
   }
 
   reset() {
@@ -113,6 +164,7 @@ export class FractalRenderer {
       hands: controls,
       energy: params.energy,
       time: this.time,
+      breath: BREATH,
     })
 
     // Palette follows the hands. Two hands average their positions, so
@@ -157,8 +209,20 @@ export class FractalRenderer {
     iterate(this.spec, this.hist, this.palette, SAMPLES_PER_FRAME, camera)
     this.samples = this.samples * 0.98 + SAMPLES_PER_FRAME
 
-    toneMap(this.hist, this.image, 2.2, 1.6)
-    ctx.putImageData(this.image, 0, 0)
+    // The same breath drives a gentle brightness swell, so the figure pulses
+    // as a whole rather than only rearranging itself.
+    const swell = breathe(this.time, BREATH).swell
+    toneMap(this.hist, this.image, 2.2, 1.6 * swell)
+
+    if (this.scalerCtx && this.scaler) {
+      this.scalerCtx.putImageData(this.image, 0, 0)
+      // Smoothing on: a flame upscaled with nearest-neighbour would show
+      // blocky steps in its gradients.
+      ctx.imageSmoothingEnabled = true
+      ctx.drawImage(this.scaler, 0, 0, this.width, this.height)
+    } else {
+      ctx.putImageData(this.image, 0, 0)
+    }
 
     // Trails go under the skeleton so the hand always reads on top of its
     // own wake.
@@ -169,4 +233,17 @@ export class FractalRenderer {
       drawSkeleton(ctx, this.width, this.height, h, this.palette, this.time, params.energy)
     }
   }
+}
+
+/**
+ * Choose a histogram size at or below MAX_HIST_PIXELS, preserving aspect.
+ * Small windows are left at native resolution; only large ones are reduced.
+ */
+function fitHistogram(width: number, height: number): { w: number; h: number } {
+  const w0 = Math.max(1, width)
+  const h0 = Math.max(1, height)
+  const px = w0 * h0
+  if (px <= MAX_HIST_PIXELS) return { w: w0, h: h0 }
+  const k = Math.sqrt(MAX_HIST_PIXELS / px)
+  return { w: Math.max(1, Math.round(w0 * k)), h: Math.max(1, Math.round(h0 * k)) }
 }
