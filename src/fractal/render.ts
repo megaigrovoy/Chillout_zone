@@ -7,6 +7,7 @@ import { Pulse } from './pulse'
 import { CollisionTracker, NO_CONTACT } from './collision'
 import { FingerTrails } from './fingerTrails'
 import { drawFaceMesh } from './faceMesh'
+import { PupilTrails } from './pupilTrails'
 import type { FaceState } from '../tracking/useFaceTracking'
 import type { FlameSpec } from './flame'
 import type { FractalParams } from './params'
@@ -82,6 +83,9 @@ export class FractalRenderer {
   private pulse = new Pulse()
   private pulseLevel = 0
   private collision = new CollisionTracker()
+  private pupilTrails = new PupilTrails()
+  /** Separate envelope so a head jerk flashes independently of the hands. */
+  private headPulse = new Pulse()
 
   /** Histogram resolution, which may be below the canvas resolution. */
   private hw = 1
@@ -144,6 +148,8 @@ export class FractalRenderer {
     this.pulse.reset()
     this.pulseLevel = 0
     this.collision.reset()
+    this.pupilTrails.clear()
+    this.headPulse.reset()
   }
 
   /** Live sample count, surfaced in the debug HUD. */
@@ -185,6 +191,12 @@ export class FractalRenderer {
     )
     this.pulseLevel = this.pulse.update(peakSpeed, dt) * PULSE_STRENGTH
 
+    // Head motion gets its own impact envelope. Folding it into the hand pulse
+    // would make a head turn indistinguishable from a hand jab, and the two
+    // should read differently.
+    const headSpeed = face ? Math.hypot(face.velocity.x, face.velocity.y) : 0
+    const headFlash = this.headPulse.update(headSpeed, dt)
+
     // Collision needs both hands; with one or none the forms have nothing to
     // push against.
     const contact =
@@ -206,6 +218,14 @@ export class FractalRenderer {
       breath: BREATH,
       pulse: this.pulseLevel,
       contact,
+      face: face
+        ? {
+            mouth: face.mouth,
+            yaw: face.yaw,
+            roll: face.roll,
+            motion: Math.min(1, headSpeed * 1.4 + headFlash * 0.6),
+          }
+        : undefined,
     })
 
     // Palette follows the hands. Two hands average their positions, so
@@ -258,7 +278,7 @@ export class FractalRenderer {
       this.hist,
       this.image,
       2.2,
-      1.6 * swell * (1 + this.pulseLevel * 0.5 + contact.impact * 0.45),
+      1.6 * swell * (1 + this.pulseLevel * 0.5 + contact.impact * 0.45 + headFlash * 0.3),
     )
 
     if (this.scalerCtx && this.scaler) {
@@ -273,6 +293,17 @@ export class FractalRenderer {
 
     // The face sits behind the hands: it is a slower, quieter element and the
     // hands are what the player is actively steering with.
+    // Pupil trails sit under the mesh so the face lines stay legible on top.
+    this.pupilTrails.update(face)
+    this.pupilTrails.draw(
+      ctx,
+      this.width,
+      this.height,
+      this.palette,
+      this.time,
+      Math.min(1, params.energy + headFlash * 0.7),
+    )
+
     if (face) {
       drawFaceMesh(
         ctx,
@@ -281,7 +312,9 @@ export class FractalRenderer {
         face,
         this.palette,
         this.time,
-        Math.min(1, params.energy + this.pulseLevel * 0.5),
+        // Opening the mouth and moving the head brighten the face overlay, so
+        // the mesh responds to the same signals the flame does.
+        Math.min(1, params.energy + this.pulseLevel * 0.5 + face.mouth * 0.5 + headFlash * 0.5),
       )
     }
 

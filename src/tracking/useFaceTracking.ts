@@ -21,6 +21,23 @@ export interface FaceState {
   center: Point2
   /** Apparent face size (eye-to-eye distance), a proximity proxy. */
   scale: number
+  /** Pupil centres, left then right, normalized video coords. */
+  pupils: Point2[]
+  /**
+   * 0 = closed, 1 = wide open. Normalised by face size so it survives moving
+   * toward or away from the camera.
+   */
+  mouth: number
+  /**
+   * Head orientation in radians: yaw is left/right, roll is the tilt of the
+   * eye line. Derived geometrically rather than from the transformation
+   * matrix, which the model only emits when explicitly asked and which costs
+   * extra work per frame.
+   */
+  yaw: number
+  roll: number
+  /** Head centre velocity, normalized units per second, EMA-smoothed. */
+  velocity: Point2
   ready: boolean
 }
 
@@ -32,6 +49,37 @@ export interface FaceFrame {
 /** Landmark indices for the outer eye corners, used to size the face. */
 const LEFT_EYE_OUTER = 33
 const RIGHT_EYE_OUTER = 263
+
+/** Iris rings; their mean is the pupil centre. */
+const LEFT_IRIS = [474, 475, 476, 477]
+const RIGHT_IRIS = [469, 470, 471, 472]
+
+/** Inner lip landmarks used to measure mouth opening. */
+const LIP_TOP = 13
+const LIP_BOTTOM = 14
+
+/** Nose tip, used with the eye corners to estimate yaw. */
+const NOSE_TIP = 1
+
+/**
+ * Mouth aperture, as a fraction of face size, at rest and fully open.
+ * Measured from the model; used to rescale into a usable 0..1 range rather
+ * than the narrow band the raw ratio actually spans.
+ */
+const MOUTH_MIN = 0.03
+const MOUTH_MAX = 0.42
+
+const mean = (pts: Point2[], idx: number[]): Point2 => {
+  let x = 0
+  let y = 0
+  for (const i of idx) {
+    x += pts[i]?.x ?? 0
+    y += pts[i]?.y ?? 0
+  }
+  return { x: x / idx.length, y: y / idx.length }
+}
+
+const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)
 
 /**
  * Face tracking, run as a task separate from the hands.
@@ -128,13 +176,50 @@ export function useFaceTracking(videoRef: React.RefObject<HTMLVideoElement | nul
 
         const a = landmarks[LEFT_EYE_OUTER]
         const b = landmarks[RIGHT_EYE_OUTER]
-        const scale = a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0.1
+        const scale = Math.max(a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0.1, 1e-4)
+
+        // Roll: the tilt of the line between the eyes.
+        const roll = a && b ? Math.atan2(b.y - a.y, b.x - a.x) : 0
+
+        // Yaw from how far the nose sits off the midpoint between the eyes,
+        // scaled by face width. Turning the head slides the nose toward the
+        // near eye, so this tracks rotation without needing a 3D pose solve.
+        const nose = landmarks[NOSE_TIP]
+        const midX = a && b ? (a.x + b.x) / 2 : 0.5
+        const yaw = nose ? Math.atan2((nose.x - midX) / scale, 1.6) : 0
+
+        const top = landmarks[LIP_TOP]
+        const bottom = landmarks[LIP_BOTTOM]
+        const gap = top && bottom ? Math.hypot(top.x - bottom.x, top.y - bottom.y) : 0
+        const mouth = clamp01((gap / scale - MOUTH_MIN) / (MOUTH_MAX - MOUTH_MIN))
+
+        const center = { x: sx / raw.length, y: sy / raw.length }
+
+        // Velocity is noisy frame to frame; an EMA keeps it usable without
+        // introducing visible lag.
+        const prev = faceRef.current.face
+        const dt = prev ? Math.max((now - faceRef.current.timestamp) / 1000, 1e-3) : 0
+        let velocity: Point2 = { x: 0, y: 0 }
+        if (prev && dt > 0 && dt < 0.5) {
+          const rawVx = (center.x - prev.center.x) / dt
+          const rawVy = (center.y - prev.center.y) / dt
+          const k = 0.4
+          velocity = {
+            x: prev.velocity.x * (1 - k) + rawVx * k,
+            y: prev.velocity.y * (1 - k) + rawVy * k,
+          }
+        }
 
         faceRef.current = {
           face: {
             landmarks,
-            center: { x: sx / raw.length, y: sy / raw.length },
+            center,
             scale,
+            pupils: [mean(landmarks, LEFT_IRIS), mean(landmarks, RIGHT_IRIS)],
+            mouth,
+            yaw,
+            roll,
+            velocity,
             ready: true,
           },
           timestamp: now,

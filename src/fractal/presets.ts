@@ -74,6 +74,24 @@ export interface FlameControls {
   pulse: number
   /** Contact state between the two hands' forms. */
   contact?: Contact
+  /** Influence of the tracked face, if any. */
+  face?: FaceInfluence
+}
+
+/**
+ * What the face contributes to the flame.
+ *
+ * Kept as a small derived struct rather than the raw FaceState so the preset
+ * layer stays independent of the tracking layer's shape.
+ */
+export interface FaceInfluence {
+  /** 0..1 mouth opening. */
+  mouth: number
+  /** Head yaw and roll, radians. */
+  yaw: number
+  roll: number
+  /** 0..1 head motion energy. */
+  motion: number
 }
 
 /**
@@ -97,6 +115,7 @@ export function handFlame(c: FlameControls): FlameSpec {
   }
 
   const contact = c.contact ?? NO_CONTACT
+  const face = c.face
 
   c.hands.forEach((hand, handIndex) => {
     // Push this hand's anchor away from the other one. Displacing the affine
@@ -109,8 +128,14 @@ export function handFlame(c: FlameControls): FlameSpec {
     // previous 0.45..0.95 band was too narrow to feel responsive.
     // The breath term makes the spiral slowly open and close on its own; the
     // pulse punches it wider for the duration of a hit.
-    const spread = 0.28 + hand.openness * 0.72 + b.ch[0] * 0.14 + c.pulse * 0.14
-    const spin = hand.rotation + b.ch[1] * 0.22 + c.pulse * 0.16
+    // An open mouth blows the spiral open, which makes the face an expressive
+    // control rather than a passive overlay.
+    const mouthOpen = face ? face.mouth : 0
+    const spread =
+      0.28 + hand.openness * 0.72 + b.ch[0] * 0.14 + c.pulse * 0.14 + mouthOpen * 0.45
+    // Head roll tilts each cluster, so leaning turns the whole figure.
+    const spin =
+      hand.rotation + b.ch[1] * 0.22 + c.pulse * 0.16 + (face ? face.roll * 0.9 : 0)
 
     // The julia transform anchored at the hand — the spiral arms. Translating
     // the affine part by the hand position is what makes the figure grow out
@@ -134,7 +159,7 @@ export function handFlame(c: FlameControls): FlameSpec {
         // modulating only brightness would look like a light flickering on a
         // static object rather than the object itself moving.
         // A hit briefly floods in spiral, which visibly whips the arms.
-        ['spiral', Math.max(0, 0.04 + hand.energy * 0.22 + b.ch[2] * 0.09 + c.pulse * 0.09)],
+        ['spiral', Math.max(0, 0.04 + hand.energy * 0.22 + b.ch[2] * 0.09 + c.pulse * 0.09 + mouthOpen * 0.14)],
         // Openness swaps in swirl, which visibly churns the arms when the
         // hand opens — a much stronger read than a scale change alone.
         ['swirl', Math.max(0, hand.openness * 0.35 + b.ch[3] * 0.13 + c.pulse * 0.11)],
@@ -168,7 +193,9 @@ export function handFlame(c: FlameControls): FlameSpec {
     // directly: keying it to a pulse threshold made the transform snap into
     // existence mid-gesture, which measured as a jump from 38 to 82/255 in one
     // step. Fading it in by weight keeps the response continuous.
-    const filamentWeight = hand.energy * 0.6 + c.pulse * 0.5
+    // Head motion throws filaments too, so turning away sharply disturbs the
+    // figure the same way a hand gesture does.
+    const filamentWeight = hand.energy * 0.6 + c.pulse * 0.5 + (face ? face.motion * 0.45 : 0)
     if (filamentWeight > 0.02) {
       xforms.push({
         ...affine(
@@ -249,12 +276,14 @@ export function handFlame(c: FlameControls): FlameSpec {
       // A small oscillating tilt, which drifts the figure without changing its
       // internal structure. Deliberately an oscillation and not a continuous
       // turn: the figure should waver, not revolve.
-      ...affine(b.ch[4] * 0.25, 1, 1, 0, 0),
+      // Yaw shears the final transform: turning the head swings the entire
+      // figure, since the final transform is applied to every point.
+      ...affine(b.ch[4] * 0.25 + (face ? face.yaw * 0.55 : 0), 1, 1, 0, 0),
       weight: 1,
       color: 0,
       vars: vars([
         // Pulse bulges the figure outward, so a hit reads as an expansion.
-        ['eyefish', Math.max(0, 0.18 + c.energy * 0.2 + b.ch[5] * 0.07 + c.pulse * 0.08)],
+        ['eyefish', Math.max(0, 0.18 + c.energy * 0.2 + b.ch[5] * 0.07 + c.pulse * 0.08 + (face ? face.mouth * 0.12 : 0))],
         ['linear', 0.85],
       ]),
     },
