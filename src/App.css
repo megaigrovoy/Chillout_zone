@@ -59,6 +59,53 @@
   color: #b9c3dd;
 }
 
+.modes {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 20px;
+}
+
+.mode {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 14px;
+  text-align: left;
+  border-radius: 12px;
+  border: 1px solid rgba(140, 170, 255, 0.18);
+  background: rgba(255, 255, 255, 0.02);
+  color: #93a0bf;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.mode strong {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #c3cee6;
+}
+
+.mode span {
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.mode:hover {
+  border-color: rgba(140, 170, 255, 0.4);
+}
+
+/* The selected mode is marked by a tinted fill as well as a brighter border:
+   border alone is easy to miss against the panel's own outline. */
+.mode.active {
+  border-color: rgba(127, 231, 255, 0.65);
+  background: rgba(127, 231, 255, 0.08);
+  color: #a9c8e0;
+}
+
+.mode.active strong {
+  color: #7fe7ff;
+}
+
 .hints {
   margin: 0 0 24px;
   padding-left: 18px;

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { FractalCanvas } from './components/FractalCanvas'
 import type { FractalHandle } from './components/FractalCanvas'
+import { ParticleCanvas } from './components/ParticleCanvas'
+import type { ParticleHandle } from './components/ParticleCanvas'
 import { useHandTracking } from './tracking/useHandTracking'
 import type { FractalParams } from './fractal/params'
 import './App.css'
@@ -10,13 +12,26 @@ interface Stats {
   tips: number
 }
 
+/**
+ * The two visual engines.
+ *
+ * They are genuinely different systems rather than settings on one: the flame
+ * has no objects to collide, so real physics needs a particle simulation. The
+ * mode is chosen before starting and fixed for the session, which keeps each
+ * renderer owning its own canvas and lifecycle.
+ */
+type Mode = 'flame' | 'collision'
+
 export default function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const fractalRef = useRef<FractalHandle | null>(null)
+  const particleRef = useRef<ParticleHandle | null>(null)
   const { status, frameRef, start, stop } = useHandTracking(videoRef)
   const [stats, setStats] = useState<Stats | null>(null)
   const [showDebug, setShowDebug] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [mode, setMode] = useState<Mode>('flame')
+  const [particles, setParticles] = useState(0)
 
   // Track the real fullscreen state rather than a local flag: the user can
   // leave with Escape or the browser's own control, and a flag would then
@@ -46,9 +61,29 @@ export default function App() {
     [showDebug],
   )
 
+  const handleParticleStats = useCallback(
+    (n: number) => {
+      if (showDebug) setParticles(n)
+    },
+    [showDebug],
+  )
+
+  const resetScene = useCallback(() => {
+    fractalRef.current?.reset()
+    particleRef.current?.reset()
+  }, [])
+
   return (
     <div className="app">
-      <FractalCanvas frameRef={frameRef} handleRef={fractalRef} onStats={handleStats} />
+      {mode === 'flame' ? (
+        <FractalCanvas frameRef={frameRef} handleRef={fractalRef} onStats={handleStats} />
+      ) : (
+        <ParticleCanvas
+          frameRef={frameRef}
+          handleRef={particleRef}
+          onStats={handleParticleStats}
+        />
+      )}
 
       {/* Kept mounted and hidden: MediaPipe reads pixels straight off this
           element, so it must exist and be playing whenever tracking runs. */}
@@ -65,13 +100,41 @@ export default function App() {
               обе руки перед собой.
             </p>
 
+            <div className="modes">
+              <button
+                className={mode === 'flame' ? 'mode active' : 'mode'}
+                onClick={() => setMode('flame')}
+              >
+                <strong>Фрактальные пламёна</strong>
+                <span>Светящиеся спирали, вырастающие из ладоней</span>
+              </button>
+              <button
+                className={mode === 'collision' ? 'mode active' : 'mode'}
+                onClick={() => setMode('collision')}
+              >
+                <strong>Столкновение</strong>
+                <span>Частицы двух рук сталкиваются по-настоящему</span>
+              </button>
+            </div>
+
             <ul className="hints">
-              <li>Обе руки — из каждой ладони растёт своя половина фрактала</li>
-              <li>Сведите ладони — формы сплетаются в одну</li>
-              <li>Раскрытая ладонь — спираль раскрывается и закручивается</li>
-              <li>Резкое движение — из руки выбрасываются нити</li>
-              <li>Поворот кисти вращает свою половину фигуры</li>
-              <li>Ближе к камере — фигура крупнее</li>
+              {mode === 'flame' ? (
+                <>
+                  <li>Обе руки — из каждой ладони растёт своя половина фрактала</li>
+                  <li>Сведите ладони — формы упираются друг в друга</li>
+                  <li>Раскрытая ладонь — спираль раскрывается и закручивается</li>
+                  <li>Резкое движение — из руки выбрасываются нити</li>
+                  <li>Поворот кисти вращает свою половину фигуры</li>
+                </>
+              ) : (
+                <>
+                  <li>Из каждой ладони бьёт поток частиц своего цвета</li>
+                  <li>Раскрытая ладонь притягивает частицы, кулак отталкивает</li>
+                  <li>Соберите облако и толкните его в чужой поток</li>
+                  <li>В точках удара частицы вспыхивают белым</li>
+                  <li>Резкое движение рукой швыряет частицы вперёд</li>
+                </>
+              )}
             </ul>
 
             {status.kind === 'error' && <p className="error">{status.message}</p>}
@@ -94,20 +157,25 @@ export default function App() {
       {status.kind === 'running' && (
         <div className="hud">
           <button onClick={stop}>Стоп</button>
-          <button onClick={() => fractalRef.current?.reset()}>Очистить</button>
+          <button onClick={resetScene}>Очистить</button>
           <button onClick={toggleFullscreen}>
             {isFullscreen ? 'Свернуть' : 'На весь экран'}
           </button>
           <button onClick={() => setShowDebug((v) => !v)}>
             {showDebug ? 'Скрыть данные' : 'Показать данные'}
           </button>
-          {showDebug && stats && (
+          {showDebug && mode === 'flame' && stats && (
             <dl className="debug">
               <div><dt>выборок</dt><dd>{stats.tips}K</dd></div>
               <div><dt>глубина</dt><dd>{stats.params.depth.toFixed(1)}</dd></div>
               <div><dt>ветви</dt><dd>{stats.params.branches.toFixed(1)}</dd></div>
               <div><dt>разброс</dt><dd>{stats.params.spread.toFixed(2)}</dd></div>
               <div><dt>энергия</dt><dd>{stats.params.energy.toFixed(2)}</dd></div>
+            </dl>
+          )}
+          {showDebug && mode === 'collision' && (
+            <dl className="debug">
+              <div><dt>частиц</dt><dd>{particles}</dd></div>
             </dl>
           )}
         </div>
