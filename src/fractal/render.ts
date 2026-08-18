@@ -3,6 +3,7 @@ import { handFlame, buildPalette } from './presets'
 import type { HandControl } from './presets'
 import { drawSkeleton } from './skeleton'
 import { breathe } from './breathing'
+import { Pulse } from './pulse'
 import { FingerTrails } from './fingerTrails'
 import type { FlameSpec } from './flame'
 import type { FractalParams } from './params'
@@ -50,6 +51,12 @@ const DECAY = 0.985
 const BREATH = 0.85
 
 /**
+ * How strongly a sharp gesture flashes the figure. Drives brightness and the
+ * structural pulse together, so a hit both brightens and reshapes.
+ */
+const PULSE_STRENGTH = 0.9
+
+/**
  * Cap on histogram pixels. Tone mapping cost is linear in this, and it is the
  * dominant term in the frame: at ~2M pixels it alone exceeds the 60fps budget.
  * Above the cap the flame is computed at a lower resolution and scaled up on
@@ -69,6 +76,8 @@ export class FractalRenderer {
   private time = 0
   private camScale = 0.22
   private trails = new FingerTrails()
+  private pulse = new Pulse()
+  private pulseLevel = 0
 
   /** Histogram resolution, which may be below the canvas resolution. */
   private hw = 1
@@ -85,7 +94,7 @@ export class FractalRenderer {
     this.image = new ImageData(w, h)
     this.initScaler()
     this.palette = buildPalette(this.hueShift, 0.3)
-    this.spec = handFlame({ hands: [], energy: 0.2, time: 0, breath: BREATH })
+    this.spec = handFlame({ hands: [], energy: 0.2, time: 0, breath: BREATH, pulse: 0 })
   }
 
   /**
@@ -128,6 +137,8 @@ export class FractalRenderer {
     this.hist.clear()
     this.samples = 0
     this.trails.clear()
+    this.pulse.reset()
+    this.pulseLevel = 0
   }
 
   /** Live sample count, surfaced in the debug HUD. */
@@ -160,11 +171,20 @@ export class FractalRenderer {
       }
     })
 
+    // Peak speed across hands drives the impact envelope — a jab with either
+    // hand should register, so max rather than mean.
+    const peakSpeed = hands.reduce(
+      (m, h) => Math.max(m, Math.hypot(h.velocity.x, h.velocity.y)),
+      0,
+    )
+    this.pulseLevel = this.pulse.update(peakSpeed, dt) * PULSE_STRENGTH
+
     this.spec = handFlame({
       hands: controls,
       energy: params.energy,
       time: this.time,
       breath: BREATH,
+      pulse: this.pulseLevel,
     })
 
     // Palette follows the hands. Two hands average their positions, so
@@ -212,7 +232,8 @@ export class FractalRenderer {
     // The same breath drives a gentle brightness swell, so the figure pulses
     // as a whole rather than only rearranging itself.
     const swell = breathe(this.time, BREATH).swell
-    toneMap(this.hist, this.image, 2.2, 1.6 * swell)
+    // A hit flashes the whole image brighter on top of the slow swell.
+    toneMap(this.hist, this.image, 2.2, 1.6 * swell * (1 + this.pulseLevel * 0.5))
 
     if (this.scalerCtx && this.scaler) {
       this.scalerCtx.putImageData(this.image, 0, 0)
@@ -227,10 +248,25 @@ export class FractalRenderer {
     // Trails go under the skeleton so the hand always reads on top of its
     // own wake.
     this.trails.update(hands)
-    this.trails.draw(ctx, this.width, this.height, this.palette, this.time, params.energy)
+    this.trails.draw(
+      ctx,
+      this.width,
+      this.height,
+      this.palette,
+      this.time,
+      Math.min(1, params.energy + this.pulseLevel * 0.6),
+    )
 
     for (const h of hands) {
-      drawSkeleton(ctx, this.width, this.height, h, this.palette, this.time, params.energy)
+      drawSkeleton(
+        ctx,
+        this.width,
+        this.height,
+        h,
+        this.palette,
+        this.time,
+        Math.min(1, params.energy + this.pulseLevel * 0.6),
+      )
     }
   }
 }

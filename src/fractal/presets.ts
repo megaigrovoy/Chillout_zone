@@ -65,6 +65,11 @@ export interface FlameControls {
    * hands are still; 1 gives the strongest wander.
    */
   breath: number
+  /**
+   * 0..1 impact envelope from a sharp gesture. Snaps up on the leading edge of
+   * a movement and rings out afterwards.
+   */
+  pulse: number
 }
 
 /**
@@ -90,9 +95,10 @@ export function handFlame(c: FlameControls): FlameSpec {
   for (const hand of c.hands) {
     // Openness maps to spiral spread over a deliberately wide range: the
     // previous 0.45..0.95 band was too narrow to feel responsive.
-    // The breath term makes the spiral slowly open and close on its own.
-    const spread = 0.28 + hand.openness * 0.72 + b.ch[0] * 0.14
-    const spin = hand.rotation + b.ch[1] * 0.22
+    // The breath term makes the spiral slowly open and close on its own; the
+    // pulse punches it wider for the duration of a hit.
+    const spread = 0.28 + hand.openness * 0.72 + b.ch[0] * 0.14 + c.pulse * 0.14
+    const spin = hand.rotation + b.ch[1] * 0.22 + c.pulse * 0.16
 
     // The julia transform anchored at the hand — the spiral arms. Translating
     // the affine part by the hand position is what makes the figure grow out
@@ -106,10 +112,11 @@ export function handFlame(c: FlameControls): FlameSpec {
         // Drifting variation weights are what actually reshape the figure;
         // modulating only brightness would look like a light flickering on a
         // static object rather than the object itself moving.
-        ['spiral', Math.max(0, 0.04 + hand.energy * 0.22 + b.ch[2] * 0.09)],
+        // A hit briefly floods in spiral, which visibly whips the arms.
+        ['spiral', Math.max(0, 0.04 + hand.energy * 0.22 + b.ch[2] * 0.09 + c.pulse * 0.09)],
         // Openness swaps in swirl, which visibly churns the arms when the
         // hand opens — a much stronger read than a scale change alone.
-        ['swirl', Math.max(0, hand.openness * 0.35 + b.ch[3] * 0.13)],
+        ['swirl', Math.max(0, hand.openness * 0.35 + b.ch[3] * 0.13 + c.pulse * 0.11)],
       ]),
     })
 
@@ -135,10 +142,24 @@ export function handFlame(c: FlameControls): FlameSpec {
 
     // Fast movement adds a third transform that throws off filaments, so
     // waving actually changes the figure's structure and not just its colour.
-    if (hand.energy > 0.12) {
+    //
+    // The gate is on the combined weight rather than on energy or pulse
+    // directly: keying it to a pulse threshold made the transform snap into
+    // existence mid-gesture, which measured as a jump from 38 to 82/255 in one
+    // step. Fading it in by weight keeps the response continuous.
+    const filamentWeight = hand.energy * 0.6 + c.pulse * 0.5
+    if (filamentWeight > 0.02) {
       xforms.push({
-        ...affine(-spin * 1.1, 0.3 + hand.energy * 0.4, 0.3, hand.x * 1.1, hand.y * 1.1),
-        weight: 0.25 + hand.energy * 0.6,
+        ...affine(
+          -spin * 1.1,
+          0.3 + hand.energy * 0.4 + c.pulse * 0.18,
+          0.3,
+          hand.x * 1.1,
+          hand.y * 1.1,
+        ),
+        // No constant term: the transform must be able to reach zero weight so
+        // it fades out instead of popping.
+        weight: filamentWeight,
         color: hand.colorBase + 0.4,
         vars: vars([
           ['handkerchief', 0.3 + hand.energy * 0.5],
@@ -179,13 +200,15 @@ export function handFlame(c: FlameControls): FlameSpec {
     // A mild eyefish final transform curves the whole figure outward, which is
     // what gives flames their characteristic bulge instead of a flat disc.
     final: {
-      // The final transform rotates very slowly, which drifts the entire
-      // figure without changing its internal structure.
-      ...affine(b.ch[4] * 0.25, 1, 1, 0, 0),
+      // The final transform carries the slow global rotation plus a small
+      // oscillating term, which drifts the entire figure without changing its
+      // internal structure.
+      ...affine(b.spin + b.ch[4] * 0.25, 1, 1, 0, 0),
       weight: 1,
       color: 0,
       vars: vars([
-        ['eyefish', Math.max(0, 0.18 + c.energy * 0.2 + b.ch[5] * 0.07)],
+        // Pulse bulges the figure outward, so a hit reads as an expansion.
+        ['eyefish', Math.max(0, 0.18 + c.energy * 0.2 + b.ch[5] * 0.07 + c.pulse * 0.08)],
         ['linear', 0.85],
       ]),
     },
@@ -194,7 +217,7 @@ export function handFlame(c: FlameControls): FlameSpec {
 
 /** Slowly drifting figure shown when no hands are visible. */
 function idleFlame(time: number, energy: number, b: ReturnType<typeof breathe>): FlameSpec {
-  const spin = time * 0.12
+  const spin = time * 0.12 + b.spin
   const spread = 0.6 + b.ch[0] * 0.3
   return {
     xforms: [
@@ -218,7 +241,7 @@ function idleFlame(time: number, energy: number, b: ReturnType<typeof breathe>):
       },
     ],
     final: {
-      ...affine(0, 1, 1, 0, 0),
+      ...affine(b.spin, 1, 1, 0, 0),
       weight: 1,
       color: 0,
       vars: vars([
