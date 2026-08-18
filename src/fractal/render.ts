@@ -2,6 +2,7 @@ import { Histogram, iterate, toneMap } from './flame'
 import { handFlame, buildPalette } from './presets'
 import type { HandControl } from './presets'
 import { drawSkeleton } from './skeleton'
+import { FingerTrails } from './fingerTrails'
 import type { FlameSpec } from './flame'
 import type { FractalParams } from './params'
 import type { HandState } from '../tracking/types'
@@ -49,6 +50,7 @@ export class FractalRenderer {
   private decayAccum = 0
   private time = 0
   private camScale = 0.22
+  private trails = new FingerTrails()
 
   constructor(private width: number, private height: number) {
     this.hist = new Histogram(Math.max(1, width), Math.max(1, height))
@@ -74,6 +76,7 @@ export class FractalRenderer {
   reset() {
     this.hist.clear()
     this.samples = 0
+    this.trails.clear()
   }
 
   /** Live sample count, surfaced in the debug HUD. */
@@ -156,6 +159,11 @@ export class FractalRenderer {
 
     toneMap(this.hist, this.image, 2.2, 1.6)
     ctx.putImageData(this.image, 0, 0)
+
+    // Trails go under the skeleton so the hand always reads on top of its
+    // own wake.
+    this.trails.update(hands)
+    this.trails.draw(ctx, this.width, this.height, this.palette, this.time, params.energy)
 
     for (const h of hands) {
       drawSkeleton(ctx, this.width, this.height, h, this.palette, this.time, params.energy)
