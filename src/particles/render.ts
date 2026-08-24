@@ -21,6 +21,15 @@ export class ParticleRenderer {
   private sys = new ParticleSystem()
   private emitCooldown: number[] = []
   private impactGlow = 0
+  /**
+   * Pre-tinted brushes, keyed by "hue|lightness|saturation".
+   *
+   * drawImage ignores fillStyle, so a white brush stays white however the
+   * context is configured. Tinting has to happen when the brush is built, and
+   * since only a handful of colour combinations are ever used they are cached
+   * rather than rebuilt per droplet.
+   */
+  private brushes = new Map<string, HTMLCanvasElement>()
 
   constructor(private width: number, private height: number) {}
 
@@ -68,7 +77,10 @@ export class ParticleRenderer {
     hands.forEach((hand, index) => {
       this.emitCooldown[index] = (this.emitCooldown[index] ?? 0) - dt
       if (this.emitCooldown[index] > 0) return
-      this.emitCooldown[index] = 0.010 - hand.openness * 0.007
+      // Slower emission than a spray: paint is laid down, not poured. Once the
+      // population is full the hands stop adding and start purely pushing what
+      // is already there, which is the "spreading" half of the interaction.
+      this.emitCooldown[index] = 0.045 - hand.openness * 0.03
 
       const cx = (1 - hand.center.x) * this.width
       const cy = hand.center.y * this.height
@@ -80,22 +92,23 @@ export class ParticleRenderer {
       const hvx = -hand.velocity.x * this.width * 0.6
       const hvy = hand.velocity.y * this.height * 0.6
 
-      // More droplets per burst, launched slower: a viscous fluid oozes out
-      // and stays together rather than spraying.
-      const burst = 6
+      // A small dollop per emission, dropped almost at rest: thick paint has no
+      // launch velocity of its own, it only goes where the hand takes it.
+      const burst = 5
       for (let k = 0; k < burst; k++) {
         const a = Math.random() * Math.PI * 2
-        const speed = 25 + Math.random() * 80 + hand.openness * 60
-        // Emitted from a tight ring so the droplets start already in contact
-        // and cohere immediately instead of having to find each other.
-        const r = 6 + Math.random() * 8
+        const speed = 4 + Math.random() * 16
+        const r = 5 + Math.random() * 12
         this.sys.spawn(
           cx + Math.cos(a) * r,
           cy + Math.sin(a) * r,
-          Math.cos(a) * speed + hvx,
-          Math.sin(a) * speed + hvy,
+          Math.cos(a) * speed + hvx * 0.5,
+          Math.sin(a) * speed + hvy * 0.5,
           hue,
-          3.4 + Math.random() * 2.6,
+          // Effectively permanent: paint stays until it is pushed elsewhere.
+          // A lifetime made blobs evaporate mid-flow, which read as a bug
+          // rather than as fluid.
+          1e9,
         )
       }
     })
@@ -111,15 +124,23 @@ export class ParticleRenderer {
   private applyHandForces(hands: HandState[], dt: number) {
     if (hands.length === 0) return
     const base = Math.min(this.width, this.height)
-    const reach = base * 0.42
+    // A local reach, not a field over the whole canvas: paint is displaced by
+    // the hand that touches it, and a wide pull made the entire body drift as
+    // one, which read as gravity rather than as fingers in paint.
+    const reach = base * 0.16
     const reachSq = reach * reach
 
     for (const hand of hands) {
       const hx = (1 - hand.center.x) * this.width
       const hy = hand.center.y * this.height
-      // Open hand pulls inward, closed hand pushes away.
+      // Hand motion in pixels per second: the primary way paint is moved.
+      const hvx = -hand.velocity.x * this.width
+      const hvy = hand.velocity.y * this.height
+
+      // Open palm gathers, fist pushes away — a gentler version of before,
+      // since dragging is now the main interaction.
       const sign = hand.openness > 0.5 ? 1 : -1
-      const strength = base * (2.2 + Math.abs(hand.openness - 0.5) * 6) * sign
+      const gather = base * (0.6 + Math.abs(hand.openness - 0.5) * 2.4) * sign
 
       for (let i = 0; i < this.sys.count; i++) {
         const dx = hx - this.sys.x[i]
@@ -128,50 +149,97 @@ export class ParticleRenderer {
         if (dSq > reachSq || dSq < 1) continue
 
         const d = Math.sqrt(dSq)
-        // Falloff capped near the palm: an uncapped 1/r would fling particles
-        // at absurd speeds the moment they touched the hand.
-        const falloff = (1 - d / reach) / Math.max(d, reach * 0.15)
-        const f = strength * falloff * dt
+        const falloff = 1 - d / reach
+
+        // Dragging: paint under the hand is carried along with it. This is what
+        // makes the gesture feel like smearing rather than attracting.
+        const drag = falloff * falloff * 9 * dt
+        this.sys.vx[i] += (hvx - this.sys.vx[i]) * Math.min(0.9, drag)
+        this.sys.vy[i] += (hvy - this.sys.vy[i]) * Math.min(0.9, drag)
+
+        // Radial gather/push on top, capped near the palm so a hand resting on
+        // the paint does not fling it.
+        const f = gather * (falloff / Math.max(d, reach * 0.25)) * dt
         this.sys.vx[i] += (dx / d) * f
         this.sys.vy[i] += (dy / d) * f
       }
     }
   }
 
+  /**
+   * Draw the paint.
+   *
+   * Additive glowing dots read as sparks, not as pigment. Thick paint needs the
+   * opposite: opaque, saturated blobs that merge where they overlap and hide
+   * what is behind them. So droplets are drawn as solid radial blobs with a
+   * soft edge, and the canvas is cleared rather than faded — a fading trail
+   * would leave ghosts of paint that is no longer there.
+   */
   private draw(ctx: CanvasRenderingContext2D) {
     const { width, height } = this
 
-    // Fade rather than clear, which leaves motion trails.
     ctx.globalCompositeOperation = 'source-over'
-    ctx.fillStyle = `rgba(4, 12, 30, ${0.18 - this.impactGlow * 0.06})`
+    ctx.fillStyle = '#070a16'
     ctx.fillRect(0, 0, width, height)
 
-    ctx.globalCompositeOperation = 'lighter'
+    const { x, y, hue, flash, count } = this.sys
+    if (count === 0) return
 
-    const { x, y, hue, flash, life, count } = this.sys
-    for (let i = 0; i < count; i++) {
-      // Fade in over the first moments and out at the end of life, so
-      // particles do not pop in and out.
-      const age = Math.min(1, life[i] * 0.8)
-      const f = flash[i]
 
-      // A collision drives the particle toward white, so impacts read as
-      // sparks against the coloured streams.
-      const l = 55 + f * 40
-      const s = 95 - f * 55
-      // Lower per-droplet alpha, since there are far more of them and they
-      // overlap: additive blending would otherwise blow the body out to white.
-      const a = (0.13 + f * 0.5) * age
+    // Two passes. The first lays down a wide, dark body: overlapping blobs
+    // build up into a continuous mass with soft boundaries, the way merging
+    // lava-lamp globules look. The second adds a tighter bright core so the
+    // paint has depth instead of reading as flat silhouette.
+    for (let pass = 0; pass < 2; pass++) {
+      const body = pass === 0
+      const size = RADIUS * (body ? 7.5 : 3.6)
+      ctx.globalAlpha = body ? 0.5 : 0.28
 
-      // Drawn wider than the physical radius so neighbouring droplets overlap
-      // into a continuous body. At the physical size these would read as grains
-      // of sand rather than as a fluid.
-      ctx.fillStyle = `hsla(${hue[i]}, ${s}%, ${l}%, ${a})`
-      ctx.beginPath()
-      ctx.arc(x[i], y[i], RADIUS * 2.3 * (1 + f * 1.2), 0, Math.PI * 2)
-      ctx.fill()
+      for (let i = 0; i < count; i++) {
+        // Flash is quantised into a few steps so the brush cache stays small;
+        // at these sizes the banding is invisible.
+        const step = Math.round(flash[i] * 3)
+        const brush = this.brushFor(hue[i], body, step)
+        ctx.drawImage(brush, x[i] - size, y[i] - size, size * 2, size * 2)
+      }
     }
 
-    ctx.globalCompositeOperation = 'source-over'
+    ctx.globalAlpha = 1
+  }
+
+  /**
+   * A soft round brush in a given colour, built once and cached.
+   *
+   * Drawn as an image rather than arc()+fill() so the edge can be a gradient:
+   * hard-edged circles at this size would tile visibly instead of merging, and
+   * merging is the whole effect.
+   */
+  private brushFor(hue: number, body: boolean, flashStep: number): HTMLCanvasElement {
+    const key = `${Math.round(hue)}|${body ? 1 : 0}|${flashStep}`
+    const cached = this.brushes.get(key)
+    if (cached) return cached
+
+    const f = flashStep / 3
+    const l = body ? 26 + f * 14 : 58 + f * 22
+    const sat = body ? 72 : 86
+
+    const size = 64
+    const c = document.createElement('canvas')
+    c.width = size
+    c.height = size
+    const bctx = c.getContext('2d')
+    if (!bctx) return c
+
+    const r = size / 2
+    const grad = bctx.createRadialGradient(r, r, 0, r, r, r)
+    grad.addColorStop(0, `hsla(${hue}, ${sat}%, ${l}%, 1)`)
+    grad.addColorStop(0.5, `hsla(${hue}, ${sat}%, ${l}%, 0.85)`)
+    grad.addColorStop(0.82, `hsla(${hue}, ${sat}%, ${l}%, 0.28)`)
+    grad.addColorStop(1, `hsla(${hue}, ${sat}%, ${l}%, 0)`)
+    bctx.fillStyle = grad
+    bctx.fillRect(0, 0, size, size)
+
+    this.brushes.set(key, c)
+    return c
   }
 }

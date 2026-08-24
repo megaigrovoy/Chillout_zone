@@ -33,10 +33,13 @@ export const RADIUS = 1.6
 const RESTITUTION = 0.18
 
 /**
- * Velocity damping per second. Stronger than a gas would need: viscous fluid
- * carries momentum poorly, and the drag is what makes motion feel resisted.
+ * Velocity damping per second.
+ *
+ * Very heavy: thick paint barely coasts. Motion should stop almost as soon as
+ * the hand stops pushing, which is what separates dragging a finger through
+ * paint from stirring water.
  */
-const DRAG = 0.55
+const DRAG = 0.08
 
 /**
  * Range over which particles attract each other, as a multiple of RADIUS.
@@ -46,7 +49,7 @@ const DRAG = 0.55
  * particles disperses. Attraction at a distance is what holds a body together
  * and lets it stretch into strands instead of scattering.
  */
-const COHESION_RANGE = 8.0
+const COHESION_RANGE = 9.0
 
 /**
  * Strength of that mutual attraction, px/s per second.
@@ -55,14 +58,35 @@ const COHESION_RANGE = 8.0
  * with a squared falloff the effective pull at typical droplet spacing was
  * only 8.9px/s^2 and friction simply ate it, so the fluid never gathered.
  */
-const COHESION = 900
+const COHESION = 1400
 
 /**
  * Viscosity: how strongly neighbours pull each other toward a common
  * velocity. This is the property that actually reads as "thick" — without it
  * a cohesive fluid still slides through itself like dry sand.
  */
-const VISCOSITY = 14
+const VISCOSITY = 26
+
+/**
+ * Preferred neighbour spacing, in radii. Below it droplets push apart, above
+ * it they pull together, so the fluid has a natural density instead of
+ * collapsing as hard as cohesion allows.
+ *
+ * The collision radius is derived from this rather than from RADIUS itself:
+ * with hard contact at 2*RADIUS the positional correction shoved droplets back
+ * to 3.2px every frame while tension was trying to hold them at 5.4px, and the
+ * correction won — the fluid packed to a measured 0.62px spacing. Making the
+ * two agree is what lets the fluid hold an open, rounded structure.
+ */
+const REST_SPACING = 3.4
+
+/**
+ * Neighbour count at which cohesion is at full strength. Above it the pull is
+ * divided down, so packing more droplets together does not compress the fluid
+ * further — a fluid's density should be a property, not a function of how much
+ * of it there happens to be.
+ */
+const COHESION_NORM = 6
 
 export class ParticleSystem {
   x = new Float32Array(MAX_PARTICLES)
@@ -94,6 +118,8 @@ export class ParticleSystem {
   private cellStart: Int32Array = new Int32Array(0)
   private cellItems: Int32Array = new Int32Array(MAX_PARTICLES)
   private cellCount: Int32Array = new Int32Array(0)
+  /** Neighbours in cohesion range per droplet, used to normalise the pull. */
+  private neighbourCount = new Float32Array(MAX_PARTICLES)
 
   clear() {
     this.count = 0
@@ -179,13 +205,50 @@ export class ParticleSystem {
     // Cached because it is read inside the innermost loop.
     const dtCache = dt
 
+    // Cohesion is summed over every neighbour in range, while the contact
+    // response only pushes back from the nearest few. In open space that
+    // balances at the rest spacing, but inside a pack the inward pull wins by
+    // sheer count and crushes the fluid — measured at 1.17px spacing against a
+    // 5.44px target. Counting each droplet's neighbours lets the pull be
+    // normalised so density does not amplify it.
+    if (this.neighbourCount.length < this.count) {
+      this.neighbourCount = new Float32Array(this.count * 2)
+    }
+    this.neighbourCount.fill(0, 0, this.count)
+
     this.rebuildGrid(width, height)
 
     let totalImpulse = 0
-    const minDist = RADIUS * 2
+    // Contact begins at the rest spacing, not at the physical radius, so the
+    // collision response and surface tension push toward the same distance
+    // instead of fighting each other.
+    const minDist = RADIUS * REST_SPACING
     const minDistSq = minDist * minDist
     const cohesionDist = RADIUS * COHESION_RANGE
     const cohesionDistSq = cohesionDist * cohesionDist
+
+    // Phase 1: count neighbours within cohesion range.
+    for (let i = 0; i < this.count; i++) {
+      const cx0 = (this.x[i] / this.cellSize) | 0
+      const cy0 = (this.y[i] / this.cellSize) | 0
+      for (let ny = cy0 - 1; ny <= cy0 + 1; ny++) {
+        if (ny < 0 || ny >= this.rows) continue
+        for (let nx = cx0 - 1; nx <= cx0 + 1; nx++) {
+          if (nx < 0 || nx >= this.cols) continue
+          const cell = ny * this.cols + nx
+          const start = this.cellStart[cell]
+          const end = start + this.cellCount[cell]
+          for (let k = start; k < end; k++) {
+            const j = this.cellItems[k]
+            if (j === i) continue
+            const dx = this.x[j] - this.x[i]
+            const dy = this.y[j] - this.y[i]
+            const d2 = dx * dx + dy * dy
+            if (d2 > 0 && d2 < cohesionDistSq) this.neighbourCount[i]++
+          }
+        }
+      }
+    }
 
     for (let i = 0; i < this.count; i++) {
       const cx = (this.x[i] / this.cellSize) | 0
@@ -224,7 +287,18 @@ export class ParticleSystem {
               // near nothing across most of the interaction band, leaving
               // attraction only for droplets already touching.
               const falloff = 1 - dist / cohesionDist
-              const pull = COHESION * falloff * dtCache
+
+              // Beyond the rest spacing this branch is purely attractive;
+              // everything closer is handled by the contact response above,
+              // which now separates to exactly the rest spacing.
+              // Normalise by neighbour count so a droplet deep inside the mass
+              // is not pulled harder than one on the surface. Without this the
+              // fluid's density feeds back into its own compression.
+              const crowd = Math.max(
+                1,
+                (this.neighbourCount[i] + this.neighbourCount[j]) * 0.5 / COHESION_NORM,
+              )
+              const pull = (COHESION * falloff * dtCache) / crowd
               this.vx[i] += nxn * pull
               this.vy[i] += nyn * pull
               this.vx[j] -= nxn * pull
@@ -261,8 +335,11 @@ export class ParticleSystem {
 
             totalImpulse += Math.abs(impulse)
 
-            // Positional correction, split between the two bodies.
-            const overlap = (minDist - dist) * 0.5
+            // Positional correction, split between the two bodies. Relaxed
+            // rather than applied in full: correcting all the way each frame in
+            // a dense pack makes neighbours shove each other back and forth and
+            // the surface jitters.
+            const overlap = (minDist - dist) * 0.5 * 0.6
             this.x[i] -= nxn * overlap
             this.y[i] -= nyn * overlap
             this.x[j] += nxn * overlap
