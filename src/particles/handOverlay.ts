@@ -25,7 +25,14 @@ const BONES: Array<[number, number]> = [
   [5, 9], [9, 13], [13, 17],
 ]
 
-const TIPS = new Set([4, 8, 12, 16, 20])
+/**
+ * The palm outline: wrist, then the knuckles across the hand.
+ *
+ * Filled as a polygon rather than a literal triangle — the palm is bounded by
+ * the wrist and the four finger bases, and a three-point shape would not follow
+ * the hand as it turns or splays.
+ */
+const PALM = [0, 5, 9, 13, 17]
 
 export function drawHandOverlay(
   ctx: CanvasRenderingContext2D,
@@ -54,6 +61,21 @@ export function drawHandOverlay(
   // obvious that nothing is coming out.
   const lit = 0.3 + flow * 0.7
 
+  // Palm fill, brightening as the hand opens. This replaces the ring: the tap
+  // opening is shown by the hand itself lighting up rather than by a separate
+  // marker floating over it.
+  if (flow > 0) {
+    ctx.fillStyle = `hsla(${hue}, 90%, 62%, ${0.05 + flow * 0.20})`
+    ctx.beginPath()
+    for (let k = 0; k < PALM.length; k++) {
+      const i = PALM[k]
+      if (k === 0) ctx.moveTo(px(i), py(i))
+      else ctx.lineTo(px(i), py(i))
+    }
+    ctx.closePath()
+    ctx.fill()
+  }
+
   for (let pass = 0; pass < 2; pass++) {
     const glow = pass === 0
     ctx.lineWidth = glow ? 8 + flow * 5 : 2
@@ -70,32 +92,13 @@ export function drawHandOverlay(
     ctx.stroke()
   }
 
-  // Joints, with fingertips brighter so the pose reads even where bones cross.
+  // Joints, all the same size: emphasising the fingertips drew the eye to the
+  // ends of the fingers, which is not where anything happens.
+  ctx.fillStyle = `hsla(${hue}, 92%, ${70 + flow * 15}%, ${0.42 * lit})`
   for (let i = 0; i < 21; i++) {
-    const tip = TIPS.has(i)
-    const r = tip ? 3.6 + flow * 1.8 : 2
-
-    ctx.fillStyle = `hsla(${hue}, 92%, 72%, ${(tip ? 0.14 : 0.09) * lit})`
     ctx.beginPath()
-    ctx.arc(px(i), py(i), r * 2.6, 0, Math.PI * 2)
+    ctx.arc(px(i), py(i), 2, 0, Math.PI * 2)
     ctx.fill()
-
-    ctx.fillStyle = `hsla(${hue}, 92%, ${70 + flow * 15}%, ${(tip ? 0.7 : 0.42) * lit})`
-    ctx.beginPath()
-    ctx.arc(px(i), py(i), r, 0, Math.PI * 2)
-    ctx.fill()
-  }
-
-  // A ring at the palm marking the emission radius, so it is visible where
-  // paint will actually appear — and it grows as the hand opens.
-  if (flow > 0) {
-    const cx = (1 - hand.center.x) * width
-    const cy = hand.center.y * height
-    ctx.strokeStyle = `hsla(${hue}, 95%, 76%, ${0.10 + flow * 0.22})`
-    ctx.lineWidth = 1.5
-    ctx.beginPath()
-    ctx.arc(cx, cy, 10 + flow * 26, 0, Math.PI * 2)
-    ctx.stroke()
   }
 
   ctx.globalCompositeOperation = 'source-over'
