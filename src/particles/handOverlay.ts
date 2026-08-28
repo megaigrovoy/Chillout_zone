@@ -42,8 +42,6 @@ export function drawHandOverlay(
   hue: number,
   /** 0..1 — how open the tap is; 0 means no paint is flowing. */
   flow: number,
-  /** 0..1 — flashes on each burst of droplets, decaying between them. */
-  pulse = 0,
 ) {
   const pts = hand.landmarks
   if (!pts || pts.length < 21) return
@@ -62,15 +60,12 @@ export function drawHandOverlay(
   // where their hand is while the tap is shut, but the overlay should make it
   // obvious that nothing is coming out.
   const lit = 0.3 + flow * 0.7
-  // The pulse rides on top of the steady brightness, so the hand visibly
-  // throbs while paint is leaving it rather than sitting at a constant glow.
-  const beat = 1 + pulse * 0.9
 
   // Palm fill, brightening as the hand opens. This replaces the ring: the tap
   // opening is shown by the hand itself lighting up rather than by a separate
   // marker floating over it.
   if (flow > 0) {
-    ctx.fillStyle = `hsla(${hue}, 90%, ${62 + pulse * 14}%, ${(0.05 + flow * 0.20) * beat})`
+    ctx.fillStyle = `hsla(${hue}, 90%, ${62 + flow * 14}%, ${0.07 + flow * 0.26})`
     ctx.beginPath()
     for (let k = 0; k < PALM.length; k++) {
       const i = PALM[k]
@@ -83,11 +78,11 @@ export function drawHandOverlay(
 
   for (let pass = 0; pass < 2; pass++) {
     const glow = pass === 0
-    // The glow pass also widens on a burst, which reads as light spilling off
-    // the hand rather than the lines merely brightening.
-    ctx.lineWidth = glow ? 8 + flow * 5 + pulse * 6 : 2
-    ctx.strokeStyle = `hsla(${hue}, 90%, ${58 + flow * 18 + pulse * 12}%, ${
-      (glow ? 0.05 : 0.34) * lit * beat
+    // The glow pass widens with flow, so an open hand spills more light than a
+    // barely-open one rather than only being brighter.
+    ctx.lineWidth = glow ? 8 + flow * 9 : 2
+    ctx.strokeStyle = `hsla(${hue}, 90%, ${58 + flow * 24}%, ${
+      (glow ? 0.06 : 0.34) * lit * (1 + flow * 0.5)
     })`
 
     // One path for all bones: stroke() is the expensive call, not the geometry.
@@ -101,7 +96,7 @@ export function drawHandOverlay(
 
   // Joints, all the same size: emphasising the fingertips drew the eye to the
   // ends of the fingers, which is not where anything happens.
-  ctx.fillStyle = `hsla(${hue}, 92%, ${70 + flow * 15 + pulse * 10}%, ${0.42 * lit * beat})`
+  ctx.fillStyle = `hsla(${hue}, 92%, ${70 + flow * 20}%, ${0.42 * lit * (1 + flow * 0.5)})`
   for (let i = 0; i < 21; i++) {
     ctx.beginPath()
     ctx.arc(px(i), py(i), 2, 0, Math.PI * 2)

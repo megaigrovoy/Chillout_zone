@@ -42,17 +42,6 @@ function flowOf(openness: number): number {
 export class ParticleRenderer {
   private sys = new ParticleSystem()
   private emitCooldown: number[] = []
-  /**
-   * Phase of the per-hand emission throb, in radians.
-   *
-   * Tying the glow to individual spawn events cannot work across the emission
-   * range: a fully open hand emits 83 times a second, i.e. more than once per
-   * frame, so an event-driven envelope is re-triggered every frame and its
-   * measured swing collapses to zero — a constant glow. A free-running
-   * oscillator throbs at a readable rate regardless, and its speed is tied to
-   * flow so a wider-open hand pulses faster.
-   */
-  private pulsePhase: number[] = []
   private impactGlow = 0
   /**
    * Pre-tinted brushes, keyed by "hue|lightness|saturation".
@@ -74,7 +63,6 @@ export class ParticleRenderer {
   reset() {
     this.sys.clear()
     this.emitCooldown.length = 0
-    this.pulsePhase.length = 0
     this.impactGlow = 0
   }
 
@@ -85,7 +73,6 @@ export class ParticleRenderer {
   render(ctx: CanvasRenderingContext2D, hands: HandState[], dt: number) {
     const { width, height } = this
 
-    this.advancePulse(hands, dt)
     this.emit(hands, dt)
     this.applyHandForces(hands, dt)
     this.sys.integrate(dt, width, height)
@@ -104,23 +91,6 @@ export class ParticleRenderer {
   }
 
   /**
-   * Advance each hand's throb.
-   *
-   * Runs whether or not the hand is emitting: a closed hand's phase keeps
-   * turning so that reopening does not snap the glow to an arbitrary point in
-   * the cycle.
-   */
-  private advancePulse(hands: HandState[], dt: number) {
-    hands.forEach((_hand, index) => {
-      const flow = flowOf(hands[index].openness)
-      // 2.6Hz at a trickle up to 5.6Hz wide open — fast enough to feel alive,
-      // slow enough that each beat is individually visible.
-      const hz = 2.6 + flow * 3.0
-      this.pulsePhase[index] = ((this.pulsePhase[index] ?? 0) + dt * hz * Math.PI * 2) % (Math.PI * 2)
-    })
-  }
-
-  /**
    * Draw each hand in its own emitter colour.
    *
    * Painted after the fluid so the hands read as being in front of the paint,
@@ -128,7 +98,7 @@ export class ParticleRenderer {
    * the true state of the tap rather than a separate approximation of it.
    */
   private drawHands(ctx: CanvasRenderingContext2D, hands: HandState[]) {
-    hands.forEach((hand, index) => {
+    for (const hand of hands) {
       const hue = hand.handedness === 'Left' ? LEFT_HUE : RIGHT_HUE
       const flow = flowOf(hand.openness)
       drawHandOverlay(
@@ -138,13 +108,8 @@ export class ParticleRenderer {
         hand,
         hue,
         flow,
-        // Raised to a power so the throb spends more time dim than bright,
-        // which reads as a pulse rather than as a sine wash. Scaled by flow so
-        // a closed hand sits still — a hand that pulses while emitting nothing
-        // would advertise a tap that is actually shut.
-        flow * Math.pow(0.5 + 0.5 * Math.sin(this.pulsePhase[index] ?? 0), 1.8),
       )
-    })
+    }
   }
 
   /**
