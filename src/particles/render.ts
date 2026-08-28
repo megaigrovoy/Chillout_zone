@@ -17,6 +17,15 @@ import type { HandState } from '../tracking/types'
 const LEFT_HUE = 195
 const RIGHT_HUE = 300
 
+/**
+ * Hand openness below which no paint is released at all.
+ *
+ * Set inside the measured range rather than at zero: a fist does not register
+ * as exactly 0 openness, so a threshold at 0 would never actually close the
+ * tap.
+ */
+const OPEN_THRESHOLD = 0.32
+
 export class ParticleRenderer {
   private sys = new ParticleSystem()
   private emitCooldown: number[] = []
@@ -55,7 +64,8 @@ export class ParticleRenderer {
     this.applyHandForces(hands, dt)
     this.sys.integrate(dt, width, height)
 
-    const impulse = this.sys.collide(width, height, dt)
+    // Contact is resolved over several passes; see RELAX_PASSES.
+    const impulse = this.sys.relax(width, height, dt)
     // Normalise by count so the global flash reflects collision *intensity*
     // rather than merely how many particles are on screen.
     const perParticle = this.sys.count > 0 ? impulse / this.sys.count : 0
@@ -76,11 +86,19 @@ export class ParticleRenderer {
   private emit(hands: HandState[], dt: number) {
     hands.forEach((hand, index) => {
       this.emitCooldown[index] = (this.emitCooldown[index] ?? 0) - dt
+
+      // A closed hand is a closed tap: below this the flow stops entirely
+      // rather than merely slowing. A rate that only tapers left paint
+      // trickling from a fist, so the gesture never read as "off".
+      if (hand.openness < OPEN_THRESHOLD) return
+
       if (this.emitCooldown[index] > 0) return
-      // Slower emission than a spray: paint is laid down, not poured. Once the
-      // population is full the hands stop adding and start purely pushing what
-      // is already there, which is the "spreading" half of the interaction.
-      this.emitCooldown[index] = 0.045 - hand.openness * 0.03
+      // How far the hand is open past the threshold, renormalised to 0..1, so
+      // the flow ramps up across the usable part of the range instead of
+      // jumping to full the instant the hand cracks open.
+      const flow = (hand.openness - OPEN_THRESHOLD) / (1 - OPEN_THRESHOLD)
+      // Slower emission than a spray: paint is laid down, not poured.
+      this.emitCooldown[index] = 0.05 - flow * 0.038
 
       const cx = (1 - hand.center.x) * this.width
       const cy = hand.center.y * this.height
@@ -93,12 +111,16 @@ export class ParticleRenderer {
       const hvy = hand.velocity.y * this.height * 0.6
 
       // A small dollop per emission, dropped almost at rest: thick paint has no
-      // launch velocity of its own, it only goes where the hand takes it.
-      const burst = 5
+      // launch velocity of its own, it only goes where the hand takes it. A
+      // wider-open hand releases more at once, so opening further visibly
+      // increases the flow rather than only its frequency.
+      const burst = 2 + Math.round(flow * 5)
       for (let k = 0; k < burst; k++) {
         const a = Math.random() * Math.PI * 2
         const speed = 4 + Math.random() * 16
-        const r = 5 + Math.random() * 12
+        // Emission ring widens as the hand opens, so paint spreads out of an
+        // open palm and stays a tight bead from a nearly-closed one.
+        const r = 4 + Math.random() * (6 + flow * 18)
         this.sys.spawn(
           cx + Math.cos(a) * r,
           cy + Math.sin(a) * r,

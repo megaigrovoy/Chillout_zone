@@ -81,6 +81,27 @@ const VISCOSITY = 26
 const REST_SPACING = 3.4
 
 /**
+ * Cap on accumulated cohesion, as a multiple of a single neighbour's pull.
+ *
+ * Roughly "how many neighbours may pull at once": low enough that interior
+ * droplets are not crushed, high enough that a droplet on the surface is still
+ * held to the body.
+ */
+const COHESION_CAP = 2.0
+
+/**
+ * Passes of contact resolution per frame.
+ *
+ * One pass is not enough at fluid density. A droplet has ~7 neighbours inside
+ * the contact radius, and resolving them all in a single pass makes their
+ * corrections push it in opposing directions, so they largely cancel: measured,
+ * a dense mass stayed packed at 2.2px against a 5.44px rest spacing while an
+ * isolated pair converged on 5.44px perfectly. Iterating lets the separation
+ * propagate outward through the mass instead of fighting itself.
+ */
+const RELAX_PASSES = 4
+
+/**
  * Neighbour count at which cohesion is at full strength. Above it the pull is
  * divided down, so packing more droplets together does not compress the fluid
  * further — a fluid's density should be a property, not a function of how much
@@ -101,6 +122,10 @@ export class ParticleSystem {
   flash = new Float32Array(MAX_PARTICLES)
 
   count = 0
+
+  /** Per-particle cohesion accumulators, so the total can be capped. */
+  private cohX = new Float32Array(MAX_PARTICLES)
+  private cohY = new Float32Array(MAX_PARTICLES)
 
   /**
    * Spatial hash for broad-phase collision detection.
@@ -355,7 +380,84 @@ export class ParticleSystem {
       }
     }
 
+    // Apply the accumulated cohesion, clamped per particle. The cap is what
+    // stops a droplet deep inside a mass from being crushed by the sheer number
+    // of neighbours pulling on it.
+    const maxPull = COHESION * dtCache * COHESION_CAP
+    for (let i = 0; i < this.count; i++) {
+      let fx = this.cohX[i]
+      let fy = this.cohY[i]
+      const mag = Math.hypot(fx, fy)
+      if (mag > maxPull) {
+        const k = maxPull / mag
+        fx *= k
+        fy *= k
+      }
+      this.vx[i] += fx
+      this.vy[i] += fy
+    }
+
     return totalImpulse
+  }
+
+  /**
+   * Resolve contacts over several passes.
+   *
+   * Only the first pass applies the velocity-level forces (impulses, cohesion,
+   * viscosity); the rest are position-only, purely separating overlaps. Running
+   * the forces repeatedly would multiply them by the pass count and inject
+   * energy, whereas positional separation is idempotent — it stops as soon as
+   * nothing overlaps.
+   */
+  relax(width: number, height: number, dt: number): number {
+    const impulse = this.collide(width, height, dt)
+    for (let pass = 1; pass < RELAX_PASSES; pass++) this.separate(width, height)
+    return impulse
+  }
+
+  /** Position-only overlap separation, used by the extra relaxation passes. */
+  private separate(width: number, height: number) {
+    if (this.count < 2) return
+    this.rebuildGrid(width, height)
+
+    const minDist = RADIUS * REST_SPACING
+    const minDistSq = minDist * minDist
+
+    for (let i = 0; i < this.count; i++) {
+      const cx = (this.x[i] / this.cellSize) | 0
+      const cy = (this.y[i] / this.cellSize) | 0
+
+      for (let ny = cy - 1; ny <= cy + 1; ny++) {
+        if (ny < 0 || ny >= this.rows) continue
+        for (let nx = cx - 1; nx <= cx + 1; nx++) {
+          if (nx < 0 || nx >= this.cols) continue
+
+          const cell = ny * this.cols + nx
+          const start = this.cellStart[cell]
+          const end = start + this.cellCount[cell]
+
+          for (let k = start; k < end; k++) {
+            const j = this.cellItems[k]
+            if (j <= i) continue
+
+            const dx = this.x[j] - this.x[i]
+            const dy = this.y[j] - this.y[i]
+            const distSq = dx * dx + dy * dy
+            if (distSq >= minDistSq || distSq === 0) continue
+
+            const dist = Math.sqrt(distSq)
+            const nxn = dx / dist
+            const nyn = dy / dist
+            const overlap = (minDist - dist) * 0.5 * 0.6
+
+            this.x[i] -= nxn * overlap
+            this.y[i] -= nyn * overlap
+            this.x[j] += nxn * overlap
+            this.y[j] += nyn * overlap
+          }
+        }
+      }
+    }
   }
 
   /** Bucket every particle into the spatial hash (counting sort). */

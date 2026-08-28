@@ -3,8 +3,6 @@ import { FractalCanvas } from './components/FractalCanvas'
 import type { FractalHandle } from './components/FractalCanvas'
 import { ParticleCanvas } from './components/ParticleCanvas'
 import type { ParticleHandle } from './components/ParticleCanvas'
-import { InfiniteCanvas } from './components/InfiniteCanvas'
-import type { InfiniteHandle } from './components/InfiniteCanvas'
 import { useHandTracking } from './tracking/useHandTracking'
 import { useFaceTracking } from './tracking/useFaceTracking'
 import type { FractalParams } from './fractal/params'
@@ -16,24 +14,19 @@ interface Stats {
 }
 
 /**
- * The visual engines.
+ * The two visual engines.
  *
  * Genuinely different systems rather than settings on one: the flame has no
- * objects to collide, so real physics needs a particle simulation, and the
- * log-space modes are per-pixel field evaluations with no objects at all. The
- * mode is chosen before starting and fixed for the session, which keeps each
- * renderer owning its own canvas and lifecycle.
+ * objects to collide, so real physics needs a particle simulation. The mode is
+ * chosen before starting and fixed for the session, which keeps each renderer
+ * owning its own canvas and lifecycle.
  */
-type Mode = 'flame' | 'collision' | 'logpolar' | 'droste' | 'kifs'
-
-/** The three log-space modes share one renderer, parameterised by variant. */
-const INFINITE_MODES: Mode[] = ['logpolar', 'droste', 'kifs']
+type Mode = 'flame' | 'collision'
 
 export default function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const fractalRef = useRef<FractalHandle | null>(null)
   const particleRef = useRef<ParticleHandle | null>(null)
-  const infiniteRef = useRef<InfiniteHandle | null>(null)
   const { status, frameRef, start: startHands, stop: stopHands } = useHandTracking(videoRef)
   const { faceRef, start: startFace, stop: stopFace } = useFaceTracking(videoRef)
   const [stats, setStats] = useState<Stats | null>(null)
@@ -41,7 +34,6 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [mode, setMode] = useState<Mode>('flame')
   const [particles, setParticles] = useState(0)
-  const [depth, setDepth] = useState(0)
 
   // Track the real fullscreen state rather than a local flag: the user can
   // leave with Escape or the browser's own control, and a flag would then
@@ -91,17 +83,9 @@ export default function App() {
     stopHands()
   }, [stopFace, stopHands])
 
-  const handleDepth = useCallback(
-    (d: number) => {
-      if (showDebug) setDepth(d)
-    },
-    [showDebug],
-  )
-
   const resetScene = useCallback(() => {
     fractalRef.current?.reset()
     particleRef.current?.reset()
-    infiniteRef.current?.reset()
   }, [])
 
   return (
@@ -121,14 +105,6 @@ export default function App() {
           onStats={handleParticleStats}
         />
       )}
-      {INFINITE_MODES.includes(mode) && (
-        <InfiniteCanvas
-          frameRef={frameRef}
-          variant={mode as 'logpolar' | 'droste' | 'kifs'}
-          handleRef={infiniteRef}
-          onStats={handleDepth}
-        />
-      )}
 
       {/* Kept mounted and hidden: MediaPipe reads pixels straight off this
           element, so it must exist and be playing whenever tracking runs. */}
@@ -139,7 +115,7 @@ export default function App() {
           <div className="panel">
             <h1>Chillout Zone</h1>
             <p className="lead">
-              Пять визуальных движков, управляемых руками через веб-камеру.
+              Два визуальных движка, управляемых руками через веб-камеру.
               Выберите режим, разрешите доступ к камере и поднимите ладони
               перед собой.
             </p>
@@ -159,27 +135,6 @@ export default function App() {
                 <strong>Столкновение</strong>
                 <span>Частицы двух рук сталкиваются по-настоящему</span>
               </button>
-              <button
-                className={mode === 'logpolar' ? 'mode active' : 'mode'}
-                onClick={() => setMode('logpolar')}
-              >
-                <strong>Бесконечные оболочки</strong>
-                <span>Узор вечно растёт наружу, повторяя сам себя</span>
-              </button>
-              <button
-                className={mode === 'droste' ? 'mode active' : 'mode'}
-                onClick={() => setMode('droste')}
-              >
-                <strong>Спираль Дросте</strong>
-                <span>Бесшовная спираль, замкнутая сама на себя</span>
-              </button>
-              <button
-                className={mode === 'kifs' ? 'mode active' : 'mode'}
-                onClick={() => setMode('kifs')}
-              >
-                <strong>Калейдоскоп</strong>
-                <span>Складывание пространства: детали без предела</span>
-              </button>
             </div>
 
             <ul className="hints">
@@ -195,21 +150,12 @@ export default function App() {
                   <li>Поворот и наклон головы разворачивают всю фигуру</li>
                   <li>За зрачками тянется светящийся след</li>
                 </>
-              ) : mode === 'collision' ? (
-                <>
-                  <li>Из каждой ладони бьёт поток частиц своего цвета</li>
-                  <li>Раскрытая ладонь притягивает частицы, кулак отталкивает</li>
-                  <li>Соберите облако и толкните его в чужой поток</li>
-                  <li>В точках удара частицы вспыхивают белым</li>
-                  <li>Резкое движение рукой швыряет частицы вперёд</li>
-                </>
               ) : (
                 <>
-                  <li>Ладонь задаёт центр, из которого растёт узор</li>
-                  <li>Сжатый кулак — плотная вложенность, раскрытая — крупная</li>
-                  <li>Поворот кисти закручивает спираль</li>
-                  <li>Вторая рука меняет палитру</li>
-                  <li>Быстрое движение ускоряет рост</li>
+                  <li>Раскройте ладонь — из неё пойдёт краска</li>
+                  <li>Сожмите кулак — краска перестаёт выходить</li>
+                  <li>Ведите рукой — краска тянется за кистью</li>
+                  <li>Две руки — два цвета, которые смешиваются при встрече</li>
                 </>
               )}
             </ul>
@@ -253,11 +199,6 @@ export default function App() {
           {showDebug && mode === 'collision' && (
             <dl className="debug">
               <div><dt>частиц</dt><dd>{particles}</dd></div>
-            </dl>
-          )}
-          {showDebug && INFINITE_MODES.includes(mode) && (
-            <dl className="debug">
-              <div><dt>глубина</dt><dd>{depth.toFixed(1)}</dd></div>
             </dl>
           )}
         </div>
