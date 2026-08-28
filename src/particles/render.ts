@@ -1,4 +1,5 @@
 import { ParticleSystem, RADIUS } from './physics'
+import { drawHandOverlay } from './handOverlay'
 import type { HandState } from '../tracking/types'
 
 /**
@@ -25,6 +26,18 @@ const RIGHT_HUE = 300
  * tap.
  */
 const OPEN_THRESHOLD = 0.32
+
+/**
+ * How far the tap is open, 0..1, renormalised past the threshold.
+ *
+ * Shared by emission and the overlay so the two can never disagree about
+ * whether paint is flowing — duplicating the arithmetic would let a change to
+ * the threshold leave the overlay showing a tap state that is no longer real.
+ */
+function flowOf(openness: number): number {
+  if (openness < OPEN_THRESHOLD) return 0
+  return (openness - OPEN_THRESHOLD) / (1 - OPEN_THRESHOLD)
+}
 
 export class ParticleRenderer {
   private sys = new ParticleSystem()
@@ -74,6 +87,21 @@ export class ParticleRenderer {
     else this.impactGlow *= Math.pow(0.06, dt)
 
     this.draw(ctx)
+    this.drawHands(ctx, hands)
+  }
+
+  /**
+   * Draw each hand in its own emitter colour.
+   *
+   * Painted after the fluid so the hands read as being in front of the paint,
+   * and using the same openness gate as emission, so the overlay always shows
+   * the true state of the tap rather than a separate approximation of it.
+   */
+  private drawHands(ctx: CanvasRenderingContext2D, hands: HandState[]) {
+    for (const hand of hands) {
+      const hue = hand.handedness === 'Left' ? LEFT_HUE : RIGHT_HUE
+      drawHandOverlay(ctx, this.width, this.height, hand, hue, flowOf(hand.openness))
+    }
   }
 
   /**
@@ -87,16 +115,13 @@ export class ParticleRenderer {
     hands.forEach((hand, index) => {
       this.emitCooldown[index] = (this.emitCooldown[index] ?? 0) - dt
 
-      // A closed hand is a closed tap: below this the flow stops entirely
-      // rather than merely slowing. A rate that only tapers left paint
+      // A closed hand is a closed tap: below the threshold the flow stops
+      // entirely rather than merely slowing. A rate that only tapers left paint
       // trickling from a fist, so the gesture never read as "off".
-      if (hand.openness < OPEN_THRESHOLD) return
+      const flow = flowOf(hand.openness)
+      if (flow <= 0) return
 
       if (this.emitCooldown[index] > 0) return
-      // How far the hand is open past the threshold, renormalised to 0..1, so
-      // the flow ramps up across the usable part of the range instead of
-      // jumping to full the instant the hand cracks open.
-      const flow = (hand.openness - OPEN_THRESHOLD) / (1 - OPEN_THRESHOLD)
       // Slower emission than a spray: paint is laid down, not poured.
       this.emitCooldown[index] = 0.05 - flow * 0.038
 
