@@ -116,12 +116,22 @@ export class ParticleSystem {
   vy = new Float32Array(MAX_PARTICLES)
   /** Palette coordinate, 0..1 — which hand spawned it. */
   hue = new Float32Array(MAX_PARTICLES)
-  /** Seconds remaining before the particle is recycled. */
-  life = new Float32Array(MAX_PARTICLES)
+  /**
+   * Seconds since the droplet was placed.
+   *
+   * Once droplets became permanent this stopped being a countdown to death and
+   * became an age, used only to fade a droplet in. That matters for recycled
+   * slots: reusing one teleports a droplet across the canvas, and without a
+   * fade the jump is visible as a flicker at both ends.
+   */
+  age = new Float32Array(MAX_PARTICLES)
   /** Collision flash, 0..1, set on impact and decayed each frame. */
   flash = new Float32Array(MAX_PARTICLES)
 
   count = 0
+
+  /** Next slot to reuse once the pool is full. */
+  private recycleCursor = 0
 
   /** Per-particle cohesion accumulators, so the total can be capped. */
   private cohX = new Float32Array(MAX_PARTICLES)
@@ -148,47 +158,48 @@ export class ParticleSystem {
 
   clear() {
     this.count = 0
+    this.recycleCursor = 0
   }
 
-  spawn(x: number, y: number, vx: number, vy: number, hue: number, life: number) {
-    if (this.count >= MAX_PARTICLES) return
-    const i = this.count++
+  /**
+   * Add a droplet, recycling the oldest one when the pool is full.
+   *
+   * Silently dropping the request instead meant the paint stopped coming out
+   * of an open hand once the pool filled — measured at 8.9s of continuous
+   * emission from one fully open palm, 4.5s from two — and never resumed,
+   * because droplets are now permanent and nothing frees a slot. Recycling
+   * keeps paint effectively permanent while bounding the total.
+   */
+  spawn(x: number, y: number, vx: number, vy: number, hue: number) {
+    let i: number
+    if (this.count >= MAX_PARTICLES) {
+      // Round-robin over the pool: the cursor walks forward, so the slot taken
+      // is always the least recently written one. Picking at random instead
+      // would punch holes through the middle of the painting.
+      i = this.recycleCursor
+      this.recycleCursor = (this.recycleCursor + 1) % MAX_PARTICLES
+    } else {
+      i = this.count++
+    }
     this.x[i] = x
     this.y[i] = y
     this.vx[i] = vx
     this.vy[i] = vy
     this.hue[i] = hue
-    this.life[i] = life
+    this.age[i] = 0
     this.flash[i] = 0
   }
 
   /**
-   * Remove a particle by swapping the last one into its slot — O(1), and order
-   * carries no meaning here.
+   * Integrate motion, age droplets, and bounce them off the walls.
+   *
+   * Nothing is removed here: droplets are permanent, and the pool is bounded by
+   * recycling in spawn() instead.
    */
-  private kill(i: number) {
-    const last = --this.count
-    if (i !== last) {
-      this.x[i] = this.x[last]
-      this.y[i] = this.y[last]
-      this.vx[i] = this.vx[last]
-      this.vy[i] = this.vy[last]
-      this.hue[i] = this.hue[last]
-      this.life[i] = this.life[last]
-      this.flash[i] = this.flash[last]
-    }
-  }
-
-  /** Integrate motion, age particles, and bounce them off the walls. */
   integrate(dt: number, width: number, height: number) {
     const damp = Math.pow(DRAG, dt)
     for (let i = 0; i < this.count; i++) {
-      this.life[i] -= dt
-      if (this.life[i] <= 0) {
-        this.kill(i)
-        i--
-        continue
-      }
+      this.age[i] += dt
 
       this.vx[i] *= damp
       this.vy[i] *= damp

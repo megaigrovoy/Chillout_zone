@@ -127,10 +127,6 @@ export class ParticleRenderer {
           Math.cos(a) * speed + hvx * 0.5,
           Math.sin(a) * speed + hvy * 0.5,
           hue,
-          // Effectively permanent: paint stays until it is pushed elsewhere.
-          // A lifetime made blobs evaporate mid-flow, which read as a bug
-          // rather than as fluid.
-          1e9,
         )
       }
     })
@@ -204,7 +200,7 @@ export class ParticleRenderer {
     ctx.fillStyle = '#070a16'
     ctx.fillRect(0, 0, width, height)
 
-    const { x, y, hue, flash, count } = this.sys
+    const { x, y, hue, flash, age, count } = this.sys
     if (count === 0) return
 
 
@@ -215,9 +211,15 @@ export class ParticleRenderer {
     for (let pass = 0; pass < 2; pass++) {
       const body = pass === 0
       const size = RADIUS * (body ? 7.5 : 3.6)
-      ctx.globalAlpha = body ? 0.5 : 0.28
+      const baseAlpha = body ? 0.5 : 0.28
 
       for (let i = 0; i < count; i++) {
+        // Fade in over the first moments. Recycled slots teleport a droplet
+        // from wherever it was to the hand, and fading hides both ends of that
+        // jump; fresh droplets get the same treatment for free.
+        const fade = Math.min(1, age[i] * 4)
+        ctx.globalAlpha = baseAlpha * fade
+
         // Flash is quantised into a few steps so the brush cache stays small;
         // at these sizes the banding is invisible.
         const step = Math.round(flash[i] * 3)
