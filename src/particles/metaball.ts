@@ -15,8 +15,15 @@
  * interpolating along cell edges recovers a clean curve.
  */
 
-/** Grid cell size in pixels. Smaller means a tighter surface but more cells. */
-export const CELL = 9
+/**
+ * Grid cell size in pixels.
+ *
+ * Smaller resolves finer detail in the surface at a cost quadratic in cell
+ * count. With the body filled as interpolated polygons the edge is smooth at
+ * any size, so this now controls how much *shape* detail survives rather than
+ * how jagged the boundary looks.
+ */
+export const CELL = 6
 
 /**
  * Field value defining the surface.
@@ -185,23 +192,73 @@ export class MetaballField {
   }
 
   /**
-   * Iterate the interior as filled cells.
+   * Iterate the interior as filled polygons.
    *
-   * The body has to be drawn from the field itself, not from per-droplet
-   * brushes: brushes reproduce the old look regardless of what the contour
-   * says, which is exactly how a metaball surface ends up invisible under it.
+   * Emitting square cells is what made the body pixelated: the contour is
+   * interpolated along cell edges and therefore smooth, while a fillRect snaps
+   * to the grid, so the two disagreed by up to half a cell all along the
+   * boundary. Each boundary cell is instead filled with the polygon marching
+   * squares actually describes, which puts the edge of the body exactly under
+   * the outline.
+   *
+   * `poly` is reused between calls; the callback must consume it immediately.
    */
-  forEachInsideCell(fn: (x: number, y: number, hue: number, depth: number) => void) {
+  forEachInsidePolygon(
+    poly: number[],
+    fn: (poly: number[], hue: number, depth: number) => void,
+  ) {
     const { cols, rows, field } = this
+
     for (let gy = 0; gy < rows; gy++) {
-      const row = gy * (cols + 1)
+      const row0 = gy * (cols + 1)
+      const row1 = (gy + 1) * (cols + 1)
       for (let gx = 0; gx < cols; gx++) {
-        const v = field[row + gx]
-        if (v <= THRESHOLD) continue
-        const w = this.weightField[row + gx]
+        const a = field[row0 + gx]
+        const b = field[row0 + gx + 1]
+        const c = field[row1 + gx + 1]
+        const d = field[row1 + gx]
+
+        let code = 0
+        if (a > THRESHOLD) code |= 1
+        if (b > THRESHOLD) code |= 2
+        if (c > THRESHOLD) code |= 4
+        if (d > THRESHOLD) code |= 8
+        if (code === 0) continue
+
+        const px = gx * CELL
+        const py = gy * CELL
+        const px1 = px + CELL
+        const py1 = py + CELL
+
+        poly.length = 0
+
+        if (code === 15) {
+          // Fully inside: the whole cell, no interpolation needed.
+          poly.push(px, py, px1, py, px1, py1, px, py1)
+        } else {
+          const top = px + CELL * ((THRESHOLD - a) / (b - a))
+          const right = py + CELL * ((THRESHOLD - b) / (c - b))
+          const bottom = px + CELL * ((THRESHOLD - d) / (c - d))
+          const left = py + CELL * ((THRESHOLD - a) / (d - a))
+
+          // Walk the cell corner by corner, inserting the interpolated
+          // crossing wherever an edge changes from inside to outside.
+          if (a > THRESHOLD) poly.push(px, py)
+          if ((code & 1) !== (code & 2) >> 1) poly.push(top, py)
+          if (b > THRESHOLD) poly.push(px1, py)
+          if ((code & 2) >> 1 !== (code & 4) >> 2) poly.push(px1, right)
+          if (c > THRESHOLD) poly.push(px1, py1)
+          if ((code & 4) >> 2 !== (code & 8) >> 3) poly.push(bottom, py1)
+          if (d > THRESHOLD) poly.push(px, py1)
+          if ((code & 8) >> 3 !== (code & 1)) poly.push(px, left)
+        }
+
+        if (poly.length < 6) continue
+
+        const w = this.weightField[row0 + gx]
         // Depth beyond the threshold, used to shade the interior: the middle of
         // a mass is denser than its rim, which is what gives it volume.
-        fn(gx * CELL, gy * CELL, w > 0 ? this.hueField[row + gx] / w : 0, v - THRESHOLD)
+        fn(poly, w > 0 ? this.hueField[row0 + gx] / w : 0, a - THRESHOLD)
       }
     }
   }

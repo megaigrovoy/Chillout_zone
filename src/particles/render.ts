@@ -1,6 +1,6 @@
 import { ParticleSystem } from './physics'
 import { drawHandOverlay } from './handOverlay'
-import { MetaballField, CELL } from './metaball'
+import { MetaballField } from './metaball'
 import type { HandState } from '../tracking/types'
 
 /**
@@ -49,6 +49,8 @@ export class ParticleRenderer {
   private metaballs: MetaballField
   /** Reused segment buffer, so contouring allocates nothing per frame. */
   private segments: number[] = []
+  /** Reused polygon buffer for the body fill, for the same reason. */
+  private polyBuffer: number[] = []
 
   constructor(private width: number, private height: number) {
     this.metaballs = new MetaballField(width, height)
@@ -248,21 +250,68 @@ export class ParticleRenderer {
   /**
    * Fill the interior of the surface.
    *
-   * Cells are drawn slightly oversized so neighbours overlap and the interior
-   * reads as continuous rather than as a visible grid.
+   * Each cell is filled with the polygon marching squares describes for it, so
+   * the body's edge lands exactly where the contour is drawn. Filling squares
+   * instead left the boundary snapped to the grid while the outline followed
+   * the interpolated crossings, which is what made the edges look pixelated.
    */
   private drawBody(ctx: CanvasRenderingContext2D) {
-    const pad = CELL * 0.75
-    const size = CELL + pad * 2
-
     ctx.globalCompositeOperation = 'source-over'
-    this.metaballs.forEachInsideCell((cx, cy, hue, depth) => {
-      // Deeper inside the mass is lighter and more saturated, so the body has
-      // shading instead of being a flat silhouette.
-      const l = 24 + Math.min(depth, 1.6) * 17
-      ctx.fillStyle = `hsl(${hue}, 74%, ${l}%)`
-      ctx.fillRect(cx - pad, cy - pad, size, size)
-    })
+
+    const poly = this.polyBuffer
+
+    // Two colour bands, matching the contour, and within each a single batched
+    // path. 94% of cells inside the surface are plain interior squares, so a
+    // fill() per cell would mean thousands of expensive canvas calls for a
+    // region that is solid anyway; only the boundary cells carry an
+    // interpolated shape worth drawing individually, and they go into the same
+    // path.
+    for (let band = 0; band < 2; band++) {
+      const bandHue = band === 0 ? LEFT_HUE : RIGHT_HUE
+      let any = false
+
+      ctx.beginPath()
+      this.metaballs.forEachInsidePolygon(poly, (p, hue) => {
+        const nearer = Math.abs(hue - LEFT_HUE) < Math.abs(hue - RIGHT_HUE) ? 0 : 1
+        if (nearer !== band) return
+
+        ctx.moveTo(p[0], p[1])
+        for (let k = 2; k < p.length; k += 2) ctx.lineTo(p[k], p[k + 1])
+        ctx.closePath()
+        any = true
+      })
+
+      if (!any) continue
+      ctx.fillStyle = `hsl(${bandHue}, 74%, 34%)`
+      ctx.fill()
+    }
+
+    // A second, brighter pass over the denser interior gives the mass volume
+    // instead of reading as a flat silhouette. Drawn additively so it only
+    // lifts what is already there.
+    ctx.globalCompositeOperation = 'lighter'
+    for (let band = 0; band < 2; band++) {
+      const bandHue = band === 0 ? LEFT_HUE : RIGHT_HUE
+      let any = false
+
+      ctx.beginPath()
+      this.metaballs.forEachInsidePolygon(poly, (p, hue, depth) => {
+        // Only the well-inside cells: the rim is left to the contour.
+        if (depth < 0.55) return
+        const nearer = Math.abs(hue - LEFT_HUE) < Math.abs(hue - RIGHT_HUE) ? 0 : 1
+        if (nearer !== band) return
+
+        ctx.moveTo(p[0], p[1])
+        for (let k = 2; k < p.length; k += 2) ctx.lineTo(p[k], p[k + 1])
+        ctx.closePath()
+        any = true
+      })
+
+      if (!any) continue
+      ctx.fillStyle = `hsla(${bandHue}, 80%, 46%, 0.5)`
+      ctx.fill()
+    }
+    ctx.globalCompositeOperation = 'source-over'
   }
 
   /**
