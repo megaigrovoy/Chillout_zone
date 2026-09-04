@@ -184,6 +184,28 @@ export class MetaballField {
     return w > 0 ? this.hueField[idx] / w : 0
   }
 
+  /**
+   * Iterate the interior as filled cells.
+   *
+   * The body has to be drawn from the field itself, not from per-droplet
+   * brushes: brushes reproduce the old look regardless of what the contour
+   * says, which is exactly how a metaball surface ends up invisible under it.
+   */
+  forEachInsideCell(fn: (x: number, y: number, hue: number, depth: number) => void) {
+    const { cols, rows, field } = this
+    for (let gy = 0; gy < rows; gy++) {
+      const row = gy * (cols + 1)
+      for (let gx = 0; gx < cols; gx++) {
+        const v = field[row + gx]
+        if (v <= THRESHOLD) continue
+        const w = this.weightField[row + gx]
+        // Depth beyond the threshold, used to shade the interior: the middle of
+        // a mass is denser than its rim, which is what gives it volume.
+        fn(gx * CELL, gy * CELL, w > 0 ? this.hueField[row + gx] / w : 0, v - THRESHOLD)
+      }
+    }
+  }
+
   /** True where the point is inside the surface. */
   insideAt(px: number, py: number): boolean {
     const gx = Math.max(0, Math.min(this.cols, Math.round(px / CELL)))

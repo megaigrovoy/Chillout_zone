@@ -1,6 +1,6 @@
-import { ParticleSystem, RADIUS } from './physics'
+import { ParticleSystem } from './physics'
 import { drawHandOverlay } from './handOverlay'
-import { MetaballField } from './metaball'
+import { MetaballField, CELL } from './metaball'
 import type { HandState } from '../tracking/types'
 
 /**
@@ -44,15 +44,6 @@ export class ParticleRenderer {
   private sys = new ParticleSystem()
   private emitCooldown: number[] = []
   private impactGlow = 0
-  /**
-   * Pre-tinted brushes, keyed by "hue|lightness|saturation".
-   *
-   * drawImage ignores fillStyle, so a white brush stays white however the
-   * context is configured. Tinting has to happen when the brush is built, and
-   * since only a handful of colour combinations are ever used they are cached
-   * rather than rebuilt per droplet.
-   */
-  private brushes = new Map<string, HTMLCanvasElement>()
 
   /** Scalar field the surface is extracted from. */
   private metaballs: MetaballField
@@ -247,17 +238,31 @@ export class ParticleRenderer {
 
     this.metaballs.build(x, y, hue, count)
 
-    // Body: wide soft blobs, which fill the interior the contour will enclose.
-    // Drawn under the outline so the surface reads as skin over volume.
-    ctx.globalAlpha = 0.42
-    const size = RADIUS * 8.5
-    for (let i = 0; i < count; i++) {
-      const brush = this.brushFor(hue[i], true, 0)
-      ctx.drawImage(brush, x[i] - size, y[i] - size, size * 2, size * 2)
-    }
-    ctx.globalAlpha = 1
-
+    // Body: fill the field's interior directly. Painting per-droplet brushes
+    // here instead reproduces the old cluster-of-blobs look no matter what the
+    // contour does, and buries the surface under it.
+    this.drawBody(ctx)
     this.drawSurface(ctx)
+  }
+
+  /**
+   * Fill the interior of the surface.
+   *
+   * Cells are drawn slightly oversized so neighbours overlap and the interior
+   * reads as continuous rather than as a visible grid.
+   */
+  private drawBody(ctx: CanvasRenderingContext2D) {
+    const pad = CELL * 0.75
+    const size = CELL + pad * 2
+
+    ctx.globalCompositeOperation = 'source-over'
+    this.metaballs.forEachInsideCell((cx, cy, hue, depth) => {
+      // Deeper inside the mass is lighter and more saturated, so the body has
+      // shading instead of being a flat silhouette.
+      const l = 24 + Math.min(depth, 1.6) * 17
+      ctx.fillStyle = `hsl(${hue}, 74%, ${l}%)`
+      ctx.fillRect(cx - pad, cy - pad, size, size)
+    })
   }
 
   /**
@@ -284,8 +289,8 @@ export class ParticleRenderer {
 
       for (let pass = 0; pass < 2; pass++) {
         const glow = pass === 0
-        ctx.lineWidth = glow ? 7 : 1.8
-        ctx.strokeStyle = `hsla(${bandHue}, 95%, ${glow ? 55 : 78}%, ${glow ? 0.06 : 0.34})`
+        ctx.lineWidth = glow ? 9 : 2.4
+        ctx.strokeStyle = `hsla(${bandHue}, 95%, ${glow ? 58 : 82}%, ${glow ? 0.10 : 0.85})`
         ctx.beginPath()
 
         let any = false
@@ -310,39 +315,4 @@ export class ParticleRenderer {
     ctx.globalCompositeOperation = 'source-over'
   }
 
-  /**
-   * A soft round brush in a given colour, built once and cached.
-   *
-   * Drawn as an image rather than arc()+fill() so the edge can be a gradient:
-   * hard-edged circles at this size would tile visibly instead of merging, and
-   * merging is the whole effect.
-   */
-  private brushFor(hue: number, body: boolean, flashStep: number): HTMLCanvasElement {
-    const key = `${Math.round(hue)}|${body ? 1 : 0}|${flashStep}`
-    const cached = this.brushes.get(key)
-    if (cached) return cached
-
-    const f = flashStep / 3
-    const l = body ? 26 + f * 14 : 58 + f * 22
-    const sat = body ? 72 : 86
-
-    const size = 64
-    const c = document.createElement('canvas')
-    c.width = size
-    c.height = size
-    const bctx = c.getContext('2d')
-    if (!bctx) return c
-
-    const r = size / 2
-    const grad = bctx.createRadialGradient(r, r, 0, r, r, r)
-    grad.addColorStop(0, `hsla(${hue}, ${sat}%, ${l}%, 1)`)
-    grad.addColorStop(0.5, `hsla(${hue}, ${sat}%, ${l}%, 0.85)`)
-    grad.addColorStop(0.82, `hsla(${hue}, ${sat}%, ${l}%, 0.28)`)
-    grad.addColorStop(1, `hsla(${hue}, ${sat}%, ${l}%, 0)`)
-    bctx.fillStyle = grad
-    bctx.fillRect(0, 0, size, size)
-
-    this.brushes.set(key, c)
-    return c
-  }
 }
