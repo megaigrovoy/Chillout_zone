@@ -188,6 +188,28 @@ export class MetaballField {
   }
 
   /**
+   * Which hue bands the field actually contains, as a bitmask.
+   *
+   * Walking the whole field once per band was ten passes where most find
+   * nothing: the two paints occupy the extremes and only the seam fills the
+   * middle. One cheap pass up front lets the empty ones be skipped entirely.
+   */
+  occupiedBands(bandOf: (hue: number) => number, level: number): number {
+    const { cols, rows, field } = this
+    let mask = 0
+    for (let gy = 0; gy < rows; gy++) {
+      const row = gy * (cols + 1)
+      for (let gx = 0; gx < cols; gx++) {
+        if (field[row + gx] <= level) continue
+        const w = this.weightField[row + gx]
+        if (w <= 0) continue
+        mask |= 1 << bandOf(this.hueField[row + gx] / w)
+      }
+    }
+    return mask
+  }
+
+  /**
    * An iso-level a given fraction of the way from the surface to the field's
    * peak.
    *
@@ -282,10 +304,20 @@ export class MetaballField {
 
         if (poly.length < 6) continue
 
-        const w = this.weightField[row0 + gx]
+        // Hue averaged over the cell's four corners rather than read from one
+        // node: sampling a single corner quantises the colour to the grid, which
+        // is what put a stepped seam where the two paints meet.
+        let hueSum = 0
+        let wSum = 0
+        for (const at of [row0 + gx, row0 + gx + 1, row1 + gx + 1, row1 + gx]) {
+          const cw = this.weightField[at]
+          if (cw <= 0) continue
+          hueSum += this.hueField[at]
+          wSum += cw
+        }
         // Depth beyond the threshold, used to shade the interior: the middle of
         // a mass is denser than its rim, which is what gives it volume.
-        fn(poly, w > 0 ? this.hueField[row0 + gx] / w : 0, a - level)
+        fn(poly, wSum > 0 ? hueSum / wSum : 0, a - level)
       }
     }
   }
