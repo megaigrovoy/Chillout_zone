@@ -54,6 +54,8 @@ export class MetaballField {
   private weightField = new Float32Array(0)
   private cols = 0
   private rows = 0
+  /** Highest field value in the last build, used to place relative levels. */
+  private peak = 0
 
   constructor(width: number, height: number) {
     this.resize(width, height)
@@ -80,6 +82,7 @@ export class MetaballField {
     this.field.fill(0)
     this.hueField.fill(0)
     this.weightField.fill(0)
+    this.peak = 0
 
     const { cols, rows } = this
     const reach = Math.ceil(INFLUENCE / CELL)
@@ -110,7 +113,9 @@ export class MetaballField {
           // seam where a droplet's influence ends.
           const w = t * t
           const idx = row + gx
-          this.field[idx] += w
+          const v = this.field[idx] + w
+          this.field[idx] = v
+          if (v > this.peak) this.peak = v
           this.hueField[idx] += h * w
           this.weightField[idx] += w
         }
@@ -180,6 +185,20 @@ export class MetaballField {
     }
 
     return n
+  }
+
+  /**
+   * An iso-level a given fraction of the way from the surface to the field's
+   * peak.
+   *
+   * A fixed level cannot work: how high the field climbs depends entirely on
+   * how much paint is piled up. Measured on a settled blob the field reached
+   * 8.7 while the interior level sat at 1.10 — 7% up the slope, hard against
+   * the surface, so both iso-lines hugged the same near-vertical step and the
+   * inner one inherited its staircase however well it was interpolated.
+   */
+  levelAt(fraction: number): number {
+    return THRESHOLD + (Math.max(this.peak, THRESHOLD) - THRESHOLD) * fraction
   }
 
   /** Mean hue at a point, for tinting the surface by what produced it. */

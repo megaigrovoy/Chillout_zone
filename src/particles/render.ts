@@ -1,12 +1,13 @@
 import { ParticleSystem } from './physics'
 import { drawHandOverlay } from './handOverlay'
-import { MetaballField, THRESHOLD } from './metaball'
+import { MetaballField } from './metaball'
 
 /**
- * Iso-level for the interior shading pass, above the surface threshold so it
- * covers only the denser middle of a mass.
+ * Where the interior shading sits, as a fraction of the way from the surface
+ * to the field's peak. Relative rather than absolute so the rim keeps a
+ * consistent width however much paint is piled up.
  */
-const INTERIOR_LEVEL = THRESHOLD + 0.55
+const INTERIOR_FRACTION = 0.35
 import type { HandState } from '../tracking/types'
 
 /**
@@ -318,7 +319,7 @@ export class ParticleRenderer {
           ctx.closePath()
           any = true
         },
-        INTERIOR_LEVEL,
+        this.metaballs.levelAt(INTERIOR_FRACTION),
       )
 
       if (!any) continue
