@@ -233,6 +233,90 @@ export class MetaballField {
   }
 
   /**
+   * Emit the interior as horizontal runs plus boundary polygons.
+   *
+   * Filling cell by cell meant ~15500 subpaths per frame at 800 droplets, and
+   * almost all of them were plain squares tiling a solid region — 4-5 path
+   * commands each for area already covered by their neighbours. A real canvas
+   * has to tessellate every one of those, which is where the frame went; the
+   * arithmetic itself was never the cost.
+   *
+   * Merging each row's solid interior into one rectangle keeps the same area
+   * with a fraction of the commands, while boundary cells still emit their own
+   * interpolated polygon so the edge stays smooth.
+   */
+  forEachSpan(
+    poly: number[],
+    onRun: (x: number, y: number, w: number, h: number) => void,
+    onCell: (poly: number[], hue: number) => void,
+    level = THRESHOLD,
+  ) {
+    const { cols, rows, field } = this
+
+    for (let gy = 0; gy < rows; gy++) {
+      const row0 = gy * (cols + 1)
+      const row1 = (gy + 1) * (cols + 1)
+
+      // Start of the current run of fully-interior cells, or -1 for none.
+      let runStart = -1
+
+      for (let gx = 0; gx < cols; gx++) {
+        const a = field[row0 + gx]
+        const b = field[row0 + gx + 1]
+        const c = field[row1 + gx + 1]
+        const d = field[row1 + gx]
+
+        const full = a > level && b > level && c > level && d > level
+
+        if (full) {
+          if (runStart < 0) runStart = gx
+          continue
+        }
+
+        // The run ends here; flush it before handling this cell.
+        if (runStart >= 0) {
+          onRun(runStart * CELL, gy * CELL, (gx - runStart) * CELL, CELL)
+          runStart = -1
+        }
+
+        let code = 0
+        if (a > level) code |= 1
+        if (b > level) code |= 2
+        if (c > level) code |= 4
+        if (d > level) code |= 8
+        if (code === 0) continue
+
+        const px = gx * CELL
+        const py = gy * CELL
+        const px1 = px + CELL
+        const py1 = py + CELL
+
+        const top = px + CELL * ((level - a) / (b - a))
+        const right = py + CELL * ((level - b) / (c - b))
+        const bottom = px + CELL * ((level - d) / (c - d))
+        const left = py + CELL * ((level - a) / (d - a))
+
+        poly.length = 0
+        if (a > level) poly.push(px, py)
+        if ((code & 1) !== (code & 2) >> 1) poly.push(top, py)
+        if (b > level) poly.push(px1, py)
+        if ((code & 2) >> 1 !== (code & 4) >> 2) poly.push(px1, right)
+        if (c > level) poly.push(px1, py1)
+        if ((code & 4) >> 2 !== (code & 8) >> 3) poly.push(bottom, py1)
+        if (d > level) poly.push(px, py1)
+        if ((code & 8) >> 3 !== (code & 1)) poly.push(px, left)
+
+        if (poly.length < 6) continue
+
+        const w = this.weightField[row0 + gx]
+        onCell(poly, w > 0 ? this.hueField[row0 + gx] / w : 0)
+      }
+
+      if (runStart >= 0) onRun(runStart * CELL, gy * CELL, (cols - runStart) * CELL, CELL)
+    }
+  }
+
+  /**
    * Iterate the interior as filled polygons.
    *
    * Emitting square cells is what made the body pixelated: the contour is

@@ -279,14 +279,26 @@ export class ParticleRenderer {
     ctx.globalCompositeOperation = 'source-over'
   }
 
-  /** Build one canvas path covering every cell inside the given iso-level. */
+  /**
+   * Build one canvas path covering everything inside the given iso-level.
+   *
+   * Solid interior rows go in as single rectangles and only boundary cells emit
+   * their own polygon. Filling cell by cell produced ~15500 subpaths per frame
+   * at 800 droplets — mostly identical squares tiling a region already covered
+   * by their neighbours — and a real canvas has to tessellate every one.
+   */
   private tracePath(ctx: CanvasRenderingContext2D, level: number) {
     ctx.beginPath()
-    this.metaballs.forEachInsidePolygon(this.polyBuffer, (p) => {
-      ctx.moveTo(p[0], p[1])
-      for (let k = 2; k < p.length; k += 2) ctx.lineTo(p[k], p[k + 1])
-      ctx.closePath()
-    }, level)
+    this.metaballs.forEachSpan(
+      this.polyBuffer,
+      (x, y, w, h) => ctx.rect(x, y, w, h),
+      (p) => {
+        ctx.moveTo(p[0], p[1])
+        for (let k = 2; k < p.length; k += 2) ctx.lineTo(p[k], p[k + 1])
+        ctx.closePath()
+      },
+      level,
+    )
   }
 
   /**
