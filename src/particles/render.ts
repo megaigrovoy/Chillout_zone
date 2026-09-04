@@ -4,18 +4,13 @@ import { MetaballField } from './metaball'
 import type { HandState } from '../tracking/types'
 
 /**
- * The paint's colour. One hue for both hands: with a single colour there is no
- * mixture to represent, so the seam problem disappears rather than being
- * solved.
+ * The single hue everything is drawn in — paint and hand overlays alike.
+ *
+ * With one colour there is no mixture to represent, so the seam problem
+ * disappears rather than being solved, and the hands read as belonging to the
+ * paint they emit rather than as separate instruments.
  */
 const PAINT_HUE = 195
-
-/**
- * Hand overlay colours, still one per hand — here the colour distinguishes the
- * hands themselves, which is useful, rather than the paint they lay down.
- */
-const LEFT_HUE = 195
-const RIGHT_HUE = 300
 
 /**
  * Hand openness below which no paint is released at all.
@@ -106,14 +101,13 @@ export class ParticleRenderer {
    */
   private drawHands(ctx: CanvasRenderingContext2D, hands: HandState[]) {
     for (const hand of hands) {
-      const hue = hand.handedness === 'Left' ? LEFT_HUE : RIGHT_HUE
       const flow = flowOf(hand.openness)
       drawHandOverlay(
         ctx,
         this.width,
         this.height,
         hand,
-        hue,
+        PAINT_HUE,
         flow,
       )
     }

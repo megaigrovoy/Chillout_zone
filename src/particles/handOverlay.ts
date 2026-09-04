@@ -5,8 +5,9 @@ import type { HandState } from '../tracking/types'
  *
  * The flame mode has an equivalent overlay, but it samples the flame's palette
  * buffer — which does not exist here. Rather than force that module to work
- * against two colour models, this one takes a plain hue: paint mode thinks in
- * per-hand hues, so the overlay reads as the nozzle the paint comes out of.
+ * against two colour models, this one takes a plain hue. Both hands pass the
+ * same one, so the overlay reads as the nozzle its paint comes out of; the hue
+ * stays a parameter rather than a constant here so the caller owns the colour.
  */
 
 /** MediaPipe hand connections: the 21-landmark bone graph. */
