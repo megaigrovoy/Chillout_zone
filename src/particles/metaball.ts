@@ -49,9 +49,6 @@ export const INFLUENCE = 26
 export class MetaballField {
   /** Scalar field, (cols+1) x (rows+1) samples. */
   private field = new Float32Array(0)
-  /** Dominant hue per sample, so the contour can be coloured by what fed it. */
-  private hueField = new Float32Array(0)
-  private weightField = new Float32Array(0)
   private cols = 0
   private rows = 0
   /** Highest field value in the last build, used to place relative levels. */
@@ -66,8 +63,6 @@ export class MetaballField {
     this.rows = Math.ceil(height / CELL) + 1
     const n = (this.cols + 1) * (this.rows + 1)
     this.field = new Float32Array(n)
-    this.hueField = new Float32Array(n)
-    this.weightField = new Float32Array(n)
   }
 
   /**
@@ -78,10 +73,8 @@ export class MetaballField {
    * particles is far cheaper than gathering at every sample, since the field is
    * empty almost everywhere.
    */
-  build(x: Float32Array, y: Float32Array, hue: Float32Array, count: number) {
+  build(x: Float32Array, y: Float32Array, count: number) {
     this.field.fill(0)
-    this.hueField.fill(0)
-    this.weightField.fill(0)
     this.peak = 0
 
     const { cols, rows } = this
@@ -91,7 +84,6 @@ export class MetaballField {
     for (let i = 0; i < count; i++) {
       const px = x[i]
       const py = y[i]
-      const h = hue[i]
 
       const cx = Math.round(px / CELL)
       const cy = Math.round(py / CELL)
@@ -116,8 +108,6 @@ export class MetaballField {
           const v = this.field[idx] + w
           this.field[idx] = v
           if (v > this.peak) this.peak = v
-          this.hueField[idx] += h * w
-          this.weightField[idx] += w
         }
       }
     }
@@ -188,28 +178,6 @@ export class MetaballField {
   }
 
   /**
-   * Which hue bands the field actually contains, as a bitmask.
-   *
-   * Walking the whole field once per band was ten passes where most find
-   * nothing: the two paints occupy the extremes and only the seam fills the
-   * middle. One cheap pass up front lets the empty ones be skipped entirely.
-   */
-  occupiedBands(bandOf: (hue: number) => number, level: number): number {
-    const { cols, rows, field } = this
-    let mask = 0
-    for (let gy = 0; gy < rows; gy++) {
-      const row = gy * (cols + 1)
-      for (let gx = 0; gx < cols; gx++) {
-        if (field[row + gx] <= level) continue
-        const w = this.weightField[row + gx]
-        if (w <= 0) continue
-        mask |= 1 << bandOf(this.hueField[row + gx] / w)
-      }
-    }
-    return mask
-  }
-
-  /**
    * An iso-level a given fraction of the way from the surface to the field's
    * peak.
    *
@@ -221,15 +189,6 @@ export class MetaballField {
    */
   levelAt(fraction: number): number {
     return THRESHOLD + (Math.max(this.peak, THRESHOLD) - THRESHOLD) * fraction
-  }
-
-  /** Mean hue at a point, for tinting the surface by what produced it. */
-  hueAt(px: number, py: number): number {
-    const gx = Math.max(0, Math.min(this.cols, Math.round(px / CELL)))
-    const gy = Math.max(0, Math.min(this.rows, Math.round(py / CELL)))
-    const idx = gy * (this.cols + 1) + gx
-    const w = this.weightField[idx]
-    return w > 0 ? this.hueField[idx] / w : 0
   }
 
   /**
@@ -248,7 +207,7 @@ export class MetaballField {
   forEachSpan(
     poly: number[],
     onRun: (x: number, y: number, w: number, h: number) => void,
-    onCell: (poly: number[], hue: number) => void,
+    onCell: (poly: number[]) => void,
     level = THRESHOLD,
   ) {
     const { cols, rows, field } = this
@@ -308,101 +267,10 @@ export class MetaballField {
 
         if (poly.length < 6) continue
 
-        const w = this.weightField[row0 + gx]
-        onCell(poly, w > 0 ? this.hueField[row0 + gx] / w : 0)
+        onCell(poly)
       }
 
       if (runStart >= 0) onRun(runStart * CELL, gy * CELL, (cols - runStart) * CELL, CELL)
-    }
-  }
-
-  /**
-   * Iterate the interior as filled polygons.
-   *
-   * Emitting square cells is what made the body pixelated: the contour is
-   * interpolated along cell edges and therefore smooth, while a fillRect snaps
-   * to the grid, so the two disagreed by up to half a cell all along the
-   * boundary. Each boundary cell is instead filled with the polygon marching
-   * squares actually describes, which puts the edge of the body exactly under
-   * the outline.
-   *
-   * `poly` is reused between calls; the callback must consume it immediately.
-   */
-  forEachInsidePolygon(
-    poly: number[],
-    fn: (poly: number[], hue: number, depth: number) => void,
-    /**
-     * Iso-level to trace. Defaults to the surface, but any level can be filled
-     * this way — which matters for the interior shading pass: selecting whole
-     * cells by a depth test gave it a grid-aligned edge (measured at 1%
-     * interpolated vertices against the surface's 21%), so the blocky mask sat
-     * on top of the smooth one.
-     */
-    level = THRESHOLD,
-  ) {
-    const { cols, rows, field } = this
-
-    for (let gy = 0; gy < rows; gy++) {
-      const row0 = gy * (cols + 1)
-      const row1 = (gy + 1) * (cols + 1)
-      for (let gx = 0; gx < cols; gx++) {
-        const a = field[row0 + gx]
-        const b = field[row0 + gx + 1]
-        const c = field[row1 + gx + 1]
-        const d = field[row1 + gx]
-
-        let code = 0
-        if (a > level) code |= 1
-        if (b > level) code |= 2
-        if (c > level) code |= 4
-        if (d > level) code |= 8
-        if (code === 0) continue
-
-        const px = gx * CELL
-        const py = gy * CELL
-        const px1 = px + CELL
-        const py1 = py + CELL
-
-        poly.length = 0
-
-        if (code === 15) {
-          // Fully inside: the whole cell, no interpolation needed.
-          poly.push(px, py, px1, py, px1, py1, px, py1)
-        } else {
-          const top = px + CELL * ((level - a) / (b - a))
-          const right = py + CELL * ((level - b) / (c - b))
-          const bottom = px + CELL * ((level - d) / (c - d))
-          const left = py + CELL * ((level - a) / (d - a))
-
-          // Walk the cell corner by corner, inserting the interpolated
-          // crossing wherever an edge changes from inside to outside.
-          if (a > level) poly.push(px, py)
-          if ((code & 1) !== (code & 2) >> 1) poly.push(top, py)
-          if (b > level) poly.push(px1, py)
-          if ((code & 2) >> 1 !== (code & 4) >> 2) poly.push(px1, right)
-          if (c > level) poly.push(px1, py1)
-          if ((code & 4) >> 2 !== (code & 8) >> 3) poly.push(bottom, py1)
-          if (d > level) poly.push(px, py1)
-          if ((code & 8) >> 3 !== (code & 1)) poly.push(px, left)
-        }
-
-        if (poly.length < 6) continue
-
-        // Hue averaged over the cell's four corners rather than read from one
-        // node: sampling a single corner quantises the colour to the grid, which
-        // is what put a stepped seam where the two paints meet.
-        let hueSum = 0
-        let wSum = 0
-        for (const at of [row0 + gx, row0 + gx + 1, row1 + gx + 1, row1 + gx]) {
-          const cw = this.weightField[at]
-          if (cw <= 0) continue
-          hueSum += this.hueField[at]
-          wSum += cw
-        }
-        // Depth beyond the threshold, used to shade the interior: the middle of
-        // a mass is denser than its rim, which is what gives it volume.
-        fn(poly, wSum > 0 ? hueSum / wSum : 0, a - level)
-      }
     }
   }
 

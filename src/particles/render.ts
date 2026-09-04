@@ -3,7 +3,17 @@ import { drawHandOverlay } from './handOverlay'
 import { MetaballField } from './metaball'
 import type { HandState } from '../tracking/types'
 
-/** Colour coordinates for the two hands, kept in the app's cool palette. */
+/**
+ * The paint's colour. One hue for both hands: with a single colour there is no
+ * mixture to represent, so the seam problem disappears rather than being
+ * solved.
+ */
+const PAINT_HUE = 195
+
+/**
+ * Hand overlay colours, still one per hand — here the colour distinguishes the
+ * hands themselves, which is useful, rather than the paint they lay down.
+ */
 const LEFT_HUE = 195
 const RIGHT_HUE = 300
 
@@ -83,7 +93,7 @@ export class ParticleRenderer {
     if (target > this.impactGlow) this.impactGlow += (target - this.impactGlow) * 0.5
     else this.impactGlow *= Math.pow(0.06, dt)
 
-    this.draw(ctx, hands)
+    this.draw(ctx)
     this.drawHands(ctx, hands)
   }
 
@@ -132,7 +142,6 @@ export class ParticleRenderer {
 
       const cx = (1 - hand.center.x) * this.width
       const cy = hand.center.y * this.height
-      const hue = hand.handedness === 'Left' ? LEFT_HUE : RIGHT_HUE
 
       // Inherit the hand's own velocity so a throwing motion actually throws
       // the particles, which is what makes flinging one stream into the other
@@ -156,7 +165,6 @@ export class ParticleRenderer {
           cy + Math.sin(a) * r,
           Math.cos(a) * speed + hvx * 0.5,
           Math.sin(a) * speed + hvy * 0.5,
-          hue,
         )
       }
     })
@@ -223,23 +231,23 @@ export class ParticleRenderer {
    * collectively form, so neighbouring droplets read as one mass with a skin
    * rather than as a cluster of separate blobs.
    */
-  private draw(ctx: CanvasRenderingContext2D, hands: HandState[]) {
+  private draw(ctx: CanvasRenderingContext2D) {
     const { width, height } = this
 
     ctx.globalCompositeOperation = 'source-over'
     ctx.fillStyle = '#070a16'
     ctx.fillRect(0, 0, width, height)
 
-    const { x, y, hue, count } = this.sys
+    const { x, y, count } = this.sys
     if (count === 0) return
 
-    this.metaballs.build(x, y, hue, count)
+    this.metaballs.build(x, y, count)
 
     // Body: fill the field's interior directly. Painting per-droplet brushes
     // here instead reproduces the old cluster-of-blobs look no matter what the
     // contour does, and buries the surface under it.
-    this.drawBody(ctx, hands)
-    this.drawSurface(ctx, hands)
+    this.drawBody(ctx)
+    this.drawSurface(ctx)
   }
 
   /**
@@ -250,19 +258,17 @@ export class ParticleRenderer {
    * instead left the boundary snapped to the grid while the outline followed
    * the interpolated crossings, which is what made the edges look pixelated.
    */
-  private drawBody(ctx: CanvasRenderingContext2D, hands: HandState[]) {
+  private drawBody(ctx: CanvasRenderingContext2D) {
     ctx.globalCompositeOperation = 'source-over'
 
-    // One path for the whole body, filled with a gradient — not per-cell colours.
+    // One path for the whole body in one flat colour.
     //
-    // Banding the cells by hue could never work: a cell belongs wholly to one
-    // band, so the boundary between bands is a cell edge. Ten bands just turned
-    // one stepped seam into ten smaller ones (measured: 496 grid-aligned borders
-    // between differently-banded neighbours). Colour has to vary *within* a
-    // cell, which a gradient does by construction and a flat per-cell fill
-    // cannot.
+    // Every attempt at two-colour paint ran into the same wall: any colour
+    // chosen per cell puts a step on a cell border, and a positional gradient
+    // colours a place rather than the paint sitting in it. A single hue removes
+    // the question — there is nothing to blend.
     this.tracePath(ctx, this.metaballs.levelAt(0))
-    ctx.fillStyle = this.paintGradient(ctx, hands, 74, 34, 1)
+    ctx.fillStyle = `hsl(${PAINT_HUE}, 74%, 34%)`
     ctx.fill()
 
     // A second, brighter pass over the denser interior gives the mass volume
@@ -274,7 +280,7 @@ export class ParticleRenderer {
     // bright region's edge ran along cell borders.
     ctx.globalCompositeOperation = 'lighter'
     this.tracePath(ctx, this.metaballs.levelAt(INTERIOR_FRACTION))
-    ctx.fillStyle = this.paintGradient(ctx, hands, 80, 46, 0.5)
+    ctx.fillStyle = `hsla(${PAINT_HUE}, 80%, 46%, 0.5)`
     ctx.fill()
     ctx.globalCompositeOperation = 'source-over'
   }
@@ -302,47 +308,6 @@ export class ParticleRenderer {
   }
 
   /**
-   * A gradient running between the two hands.
-   *
-   * Anchored to the hands rather than to the paint's bounding box: the colour
-   * belongs to whichever hand laid it, so the transition should sit between the
-   * palms and follow them as they move. With one hand or none the gradient
-   * degenerates to a single colour, which is correct — there is nothing to
-   * blend with.
-   */
-  private paintGradient(
-    ctx: CanvasRenderingContext2D,
-    hands: HandState[],
-    sat: number,
-    light: number,
-    alpha: number,
-  ): CanvasGradient | string {
-    const colour = (hue: number) =>
-      alpha >= 1 ? `hsl(${hue}, ${sat}%, ${light}%)` : `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`
-
-    const left = hands.find((h) => h.handedness === 'Left')
-    const right = hands.find((h) => h.handedness === 'Right')
-    if (!left || !right) {
-      const only = hands[0]
-      const hue = !only ? LEFT_HUE : only.handedness === 'Left' ? LEFT_HUE : RIGHT_HUE
-      return colour(hue)
-    }
-
-    const lx = (1 - left.center.x) * this.width
-    const ly = left.center.y * this.height
-    const rx = (1 - right.center.x) * this.width
-    const ry = right.center.y * this.height
-
-    const g = ctx.createLinearGradient(lx, ly, rx, ry)
-    // Stops beyond the palms keep each hand's own paint at its pure colour, so
-    // only the space between them blends.
-    g.addColorStop(0, colour(LEFT_HUE))
-    g.addColorStop(0.5, colour((LEFT_HUE + RIGHT_HUE) / 2))
-    g.addColorStop(1, colour(RIGHT_HUE))
-    return g
-  }
-
-  /**
    * Stroke the metaball contour.
    *
    * Segments are batched per colour band rather than stroked individually:
@@ -350,7 +315,7 @@ export class ParticleRenderer {
    * dominate the frame. Banding by hue keeps the two hands distinguishable
    * along the surface where their paint meets.
    */
-  private drawSurface(ctx: CanvasRenderingContext2D, hands: HandState[]) {
+  private drawSurface(ctx: CanvasRenderingContext2D) {
     const segs = this.segments
     const n = this.metaballs.contour(segs)
     if (n === 0) return
@@ -367,7 +332,7 @@ export class ParticleRenderer {
     for (let pass = 0; pass < 2; pass++) {
       const glow = pass === 0
       ctx.lineWidth = glow ? 9 : 2.4
-      ctx.strokeStyle = this.paintGradient(ctx, hands, 95, glow ? 58 : 82, glow ? 0.10 : 0.85)
+      ctx.strokeStyle = `hsla(${PAINT_HUE}, 95%, ${glow ? 58 : 82}%, ${glow ? 0.10 : 0.85})`
 
       ctx.beginPath()
       for (let k = 0; k < segs.length; k += 4) {

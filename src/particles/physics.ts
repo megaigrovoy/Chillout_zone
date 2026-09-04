@@ -126,8 +126,6 @@ export class ParticleSystem {
   y = new Float32Array(MAX_PARTICLES)
   vx = new Float32Array(MAX_PARTICLES)
   vy = new Float32Array(MAX_PARTICLES)
-  /** Palette coordinate, 0..1 — which hand spawned it. */
-  hue = new Float32Array(MAX_PARTICLES)
   /**
    * Seconds since the droplet was placed.
    *
@@ -197,7 +195,7 @@ export class ParticleSystem {
    * because droplets are now permanent and nothing frees a slot. Recycling
    * keeps paint effectively permanent while bounding the total.
    */
-  spawn(x: number, y: number, vx: number, vy: number, hue: number) {
+  spawn(x: number, y: number, vx: number, vy: number) {
     let i: number
     if (this.count >= MAX_PARTICLES) {
       // Round-robin over the pool: the cursor walks forward, so the slot taken
@@ -212,7 +210,6 @@ export class ParticleSystem {
     this.y[i] = y
     this.vx[i] = vx
     this.vy[i] = vy
-    this.hue[i] = hue
     this.age[i] = 0
     this.flash[i] = 0
   }
