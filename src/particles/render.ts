@@ -46,6 +46,10 @@ export class ParticleRenderer {
   private segments: number[] = []
   /** Reused polygon buffer for the body fill, for the same reason. */
   private polyBuffer: number[] = []
+  /** Offscreen buffer holding the local paint mixture at grid resolution. */
+  private mixCanvas: HTMLCanvasElement | null = null
+  private mixCtx: CanvasRenderingContext2D | null = null
+  private mixImage: ImageData | null = null
 
   constructor(private width: number, private height: number) {
     this.metaballs = new MetaballField(width, height)
@@ -250,33 +254,63 @@ export class ParticleRenderer {
    * instead left the boundary snapped to the grid while the outline followed
    * the interpolated crossings, which is what made the edges look pixelated.
    */
-  private drawBody(ctx: CanvasRenderingContext2D, hands: HandState[]) {
+  private drawBody(ctx: CanvasRenderingContext2D, _hands: HandState[]) {
     ctx.globalCompositeOperation = 'source-over'
 
-    // One path for the whole body, filled with a gradient — not per-cell colours.
+    // Colour comes from the local paint mixture, not from where the hands are.
     //
-    // Banding the cells by hue could never work: a cell belongs wholly to one
-    // band, so the boundary between bands is a cell edge. Ten bands just turned
-    // one stepped seam into ten smaller ones (measured: 496 grid-aligned borders
-    // between differently-banded neighbours). Colour has to vary *within* a
-    // cell, which a gradient does by construction and a flat per-cell fill
-    // cannot.
+    // A gradient between the palms was geometric: it coloured a *place* rather
+    // than whatever paint sat there, so paint flung from one hand into the
+    // other's half took the wrong colour. The field already tracks the mixture
+    // — each droplet contributes its hue weighted by influence — so that is
+    // what gets drawn, sampled per texel and stretched over the shape.
     this.tracePath(ctx, this.metaballs.levelAt(0))
-    ctx.fillStyle = this.paintGradient(ctx, hands, 74, 34, 1)
+    ctx.fillStyle = '#fff'
     ctx.fill()
 
-    // A second, brighter pass over the denser interior gives the mass volume
-    // instead of reading as a flat silhouette. Drawn additively so it only
-    // lifts what is already there.
-    //
-    // Traced as its own iso-level rather than by picking whole cells above a
-    // depth: a per-cell test includes or excludes each cell entirely, so the
-    // bright region's edge ran along cell borders.
-    ctx.globalCompositeOperation = 'lighter'
     this.tracePath(ctx, this.metaballs.levelAt(INTERIOR_FRACTION))
-    ctx.fillStyle = this.paintGradient(ctx, hands, 80, 46, 0.5)
+    ctx.fillStyle = '#fff'
     ctx.fill()
-    ctx.globalCompositeOperation = 'source-over'
+
+    // Paint the mixture over the shape just drawn. source-atop clips it to the
+    // existing pixels, so the colour lands on the body and nowhere else.
+    this.paintMixtureOver(ctx, 34, 0.86)
+  }
+
+  /**
+   * Draw the mixture buffer over whatever is already on the canvas.
+   *
+   * @param light  base lightness of the paint
+   * @param alpha  how strongly the mixture replaces what is beneath
+   */
+  private paintMixtureOver(ctx: CanvasRenderingContext2D, light: number, alpha: number) {
+    const cols = this.metaballs.gridCols
+    const rows = this.metaballs.gridRows
+
+    if (!this.mixCanvas || this.mixCanvas.width !== cols || this.mixCanvas.height !== rows) {
+      const c = document.createElement('canvas')
+      c.width = Math.max(1, cols)
+      c.height = Math.max(1, rows)
+      this.mixCanvas = c
+      this.mixCtx = c.getContext('2d')
+      this.mixImage = this.mixCtx?.createImageData(c.width, c.height) ?? null
+    }
+    const mixCtx = this.mixCtx
+    const mixImage = this.mixImage
+    if (!mixCtx || !mixImage) return
+
+    this.metaballs.paintMixture(mixImage, (hue, out, at) => {
+      hslToRgb(hue, 0.78, light / 100, out, at)
+      out[at + 3] = 255
+    })
+    mixCtx.putImageData(mixImage, 0, 0)
+
+    ctx.save()
+    ctx.globalCompositeOperation = 'source-atop'
+    ctx.globalAlpha = alpha
+    ctx.imageSmoothingEnabled = true
+    ctx.drawImage(this.mixCanvas!, 0, 0, this.width, this.height)
+    ctx.restore()
   }
 
   /** Build one canvas path covering every cell inside the given iso-level. */
@@ -290,47 +324,6 @@ export class ParticleRenderer {
   }
 
   /**
-   * A gradient running between the two hands.
-   *
-   * Anchored to the hands rather than to the paint's bounding box: the colour
-   * belongs to whichever hand laid it, so the transition should sit between the
-   * palms and follow them as they move. With one hand or none the gradient
-   * degenerates to a single colour, which is correct — there is nothing to
-   * blend with.
-   */
-  private paintGradient(
-    ctx: CanvasRenderingContext2D,
-    hands: HandState[],
-    sat: number,
-    light: number,
-    alpha: number,
-  ): CanvasGradient | string {
-    const colour = (hue: number) =>
-      alpha >= 1 ? `hsl(${hue}, ${sat}%, ${light}%)` : `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`
-
-    const left = hands.find((h) => h.handedness === 'Left')
-    const right = hands.find((h) => h.handedness === 'Right')
-    if (!left || !right) {
-      const only = hands[0]
-      const hue = !only ? LEFT_HUE : only.handedness === 'Left' ? LEFT_HUE : RIGHT_HUE
-      return colour(hue)
-    }
-
-    const lx = (1 - left.center.x) * this.width
-    const ly = left.center.y * this.height
-    const rx = (1 - right.center.x) * this.width
-    const ry = right.center.y * this.height
-
-    const g = ctx.createLinearGradient(lx, ly, rx, ry)
-    // Stops beyond the palms keep each hand's own paint at its pure colour, so
-    // only the space between them blends.
-    g.addColorStop(0, colour(LEFT_HUE))
-    g.addColorStop(0.5, colour((LEFT_HUE + RIGHT_HUE) / 2))
-    g.addColorStop(1, colour(RIGHT_HUE))
-    return g
-  }
-
-  /**
    * Stroke the metaball contour.
    *
    * Segments are batched per colour band rather than stroked individually:
@@ -338,7 +331,7 @@ export class ParticleRenderer {
    * dominate the frame. Banding by hue keeps the two hands distinguishable
    * along the surface where their paint meets.
    */
-  private drawSurface(ctx: CanvasRenderingContext2D, hands: HandState[]) {
+  private drawSurface(ctx: CanvasRenderingContext2D, _hands: HandState[]) {
     const segs = this.segments
     const n = this.metaballs.contour(segs)
     if (n === 0) return
@@ -350,12 +343,13 @@ export class ParticleRenderer {
     // The skin is banded by hue like the body, so it blends across the seam
     // instead of switching colour at a cell border. Empty bands are skipped:
     // most of them find nothing, since the paints sit at the extremes.
-    // The skin follows the same gradient as the body, for the same reason:
-    // banding it by hue would put a colour step on a cell border.
+    // The skin is stroked white and then tinted by the same mixture pass, so it
+    // matches the body's colour wherever it runs instead of being coloured by
+    // position.
     for (let pass = 0; pass < 2; pass++) {
       const glow = pass === 0
       ctx.lineWidth = glow ? 9 : 2.4
-      ctx.strokeStyle = this.paintGradient(ctx, hands, 95, glow ? 58 : 82, glow ? 0.10 : 0.85)
+      ctx.strokeStyle = glow ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.85)'
 
       ctx.beginPath()
       for (let k = 0; k < segs.length; k += 4) {
@@ -365,7 +359,36 @@ export class ParticleRenderer {
       ctx.stroke()
     }
 
+    // Lift the skin's colour: brighter and more saturated than the body so it
+    // reads as a highlight along the surface.
+    this.paintMixtureOver(ctx, 76, 0.7)
+
     ctx.globalCompositeOperation = 'source-over'
   }
 
+}
+
+/**
+ * HSL to RGB, written into a byte buffer in place.
+ *
+ * Used per texel of the mixture buffer, so it avoids strings and allocation —
+ * the canvas colour parser would be far too slow at this call rate.
+ */
+function hslToRgb(h: number, s: number, l: number, out: Uint8ClampedArray, at: number) {
+  const c = (1 - Math.abs(2 * l - 1)) * s
+  const hp = (((h % 360) + 360) % 360) / 60
+  const x = c * (1 - Math.abs((hp % 2) - 1))
+  let r = 0
+  let g = 0
+  let b = 0
+  if (hp < 1) { r = c; g = x }
+  else if (hp < 2) { r = x; g = c }
+  else if (hp < 3) { g = c; b = x }
+  else if (hp < 4) { g = x; b = c }
+  else if (hp < 5) { r = x; b = c }
+  else { r = c; b = x }
+  const m = l - c / 2
+  out[at] = (r + m) * 255
+  out[at + 1] = (g + m) * 255
+  out[at + 2] = (b + m) * 255
 }

@@ -188,6 +188,44 @@ export class MetaballField {
   }
 
   /**
+   * Render the local paint mixture into an RGBA buffer, one pixel per texel.
+   *
+   * The mixture is what the field already tracks: each droplet contributes its
+   * hue weighted by influence, so `hueField / weightField` is the blend at that
+   * point. Sampling it bilinearly and writing pixels lets the colour vary
+   * *within* a cell, which is the only way the seam can be smooth — anything
+   * chosen per cell puts a colour step on a cell border.
+   *
+   * Written at grid resolution and scaled up: the mixture varies slowly, so the
+   * upscale is invisible, and a per-screen-pixel evaluation would cost far more.
+   */
+  paintMixture(
+    image: ImageData,
+    colour: (hue: number, out: Uint8ClampedArray, at: number) => void,
+  ) {
+    const { cols, rows } = this
+    const data = image.data
+    let p = 0
+    for (let gy = 0; gy < rows; gy++) {
+      const row = gy * (cols + 1)
+      for (let gx = 0; gx < cols; gx++) {
+        const w = this.weightField[row + gx]
+        colour(w > 0 ? this.hueField[row + gx] / w : 0, data, p)
+        p += 4
+      }
+    }
+  }
+
+  /** Grid dimensions, for sizing the mixture buffer. */
+  get gridCols() {
+    return this.cols
+  }
+
+  get gridRows() {
+    return this.rows
+  }
+
+  /**
    * Which hue bands the field actually contains, as a bitmask.
    *
    * Walking the whole field once per band was ten passes where most find
