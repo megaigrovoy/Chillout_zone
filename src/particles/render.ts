@@ -1,6 +1,12 @@
 import { ParticleSystem } from './physics'
 import { drawHandOverlay } from './handOverlay'
-import { MetaballField } from './metaball'
+import { MetaballField, THRESHOLD } from './metaball'
+
+/**
+ * Iso-level for the interior shading pass, above the surface threshold so it
+ * covers only the denser middle of a mass.
+ */
+const INTERIOR_LEVEL = THRESHOLD + 0.55
 import type { HandState } from '../tracking/types'
 
 /**
@@ -289,23 +295,31 @@ export class ParticleRenderer {
     // A second, brighter pass over the denser interior gives the mass volume
     // instead of reading as a flat silhouette. Drawn additively so it only
     // lifts what is already there.
+    //
+    // Traced as its own iso-level rather than by picking whole cells above a
+    // depth: a per-cell test includes or excludes each cell entirely, so the
+    // bright region's edge ran along cell borders — a blocky mask over the
+    // smooth one, which is what still looked pixelated. Contouring at a higher
+    // level interpolates this boundary too.
     ctx.globalCompositeOperation = 'lighter'
     for (let band = 0; band < 2; band++) {
       const bandHue = band === 0 ? LEFT_HUE : RIGHT_HUE
       let any = false
 
       ctx.beginPath()
-      this.metaballs.forEachInsidePolygon(poly, (p, hue, depth) => {
-        // Only the well-inside cells: the rim is left to the contour.
-        if (depth < 0.55) return
-        const nearer = Math.abs(hue - LEFT_HUE) < Math.abs(hue - RIGHT_HUE) ? 0 : 1
-        if (nearer !== band) return
+      this.metaballs.forEachInsidePolygon(
+        poly,
+        (p, hue) => {
+          const nearer = Math.abs(hue - LEFT_HUE) < Math.abs(hue - RIGHT_HUE) ? 0 : 1
+          if (nearer !== band) return
 
-        ctx.moveTo(p[0], p[1])
-        for (let k = 2; k < p.length; k += 2) ctx.lineTo(p[k], p[k + 1])
-        ctx.closePath()
-        any = true
-      })
+          ctx.moveTo(p[0], p[1])
+          for (let k = 2; k < p.length; k += 2) ctx.lineTo(p[k], p[k + 1])
+          ctx.closePath()
+          any = true
+        },
+        INTERIOR_LEVEL,
+      )
 
       if (!any) continue
       ctx.fillStyle = `hsla(${bandHue}, 80%, 46%, 0.5)`

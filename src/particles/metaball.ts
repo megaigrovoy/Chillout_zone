@@ -35,7 +35,7 @@ export const CELL = 6
  * threshold under that guarantees every droplet has a skin, while pairs still
  * merge because their contributions sum.
  */
-const THRESHOLD = 0.55
+export const THRESHOLD = 0.55
 
 /**
  * Influence radius of one droplet, in pixels.
@@ -206,6 +206,14 @@ export class MetaballField {
   forEachInsidePolygon(
     poly: number[],
     fn: (poly: number[], hue: number, depth: number) => void,
+    /**
+     * Iso-level to trace. Defaults to the surface, but any level can be filled
+     * this way — which matters for the interior shading pass: selecting whole
+     * cells by a depth test gave it a grid-aligned edge (measured at 1%
+     * interpolated vertices against the surface's 21%), so the blocky mask sat
+     * on top of the smooth one.
+     */
+    level = THRESHOLD,
   ) {
     const { cols, rows, field } = this
 
@@ -219,10 +227,10 @@ export class MetaballField {
         const d = field[row1 + gx]
 
         let code = 0
-        if (a > THRESHOLD) code |= 1
-        if (b > THRESHOLD) code |= 2
-        if (c > THRESHOLD) code |= 4
-        if (d > THRESHOLD) code |= 8
+        if (a > level) code |= 1
+        if (b > level) code |= 2
+        if (c > level) code |= 4
+        if (d > level) code |= 8
         if (code === 0) continue
 
         const px = gx * CELL
@@ -236,20 +244,20 @@ export class MetaballField {
           // Fully inside: the whole cell, no interpolation needed.
           poly.push(px, py, px1, py, px1, py1, px, py1)
         } else {
-          const top = px + CELL * ((THRESHOLD - a) / (b - a))
-          const right = py + CELL * ((THRESHOLD - b) / (c - b))
-          const bottom = px + CELL * ((THRESHOLD - d) / (c - d))
-          const left = py + CELL * ((THRESHOLD - a) / (d - a))
+          const top = px + CELL * ((level - a) / (b - a))
+          const right = py + CELL * ((level - b) / (c - b))
+          const bottom = px + CELL * ((level - d) / (c - d))
+          const left = py + CELL * ((level - a) / (d - a))
 
           // Walk the cell corner by corner, inserting the interpolated
           // crossing wherever an edge changes from inside to outside.
-          if (a > THRESHOLD) poly.push(px, py)
+          if (a > level) poly.push(px, py)
           if ((code & 1) !== (code & 2) >> 1) poly.push(top, py)
-          if (b > THRESHOLD) poly.push(px1, py)
+          if (b > level) poly.push(px1, py)
           if ((code & 2) >> 1 !== (code & 4) >> 2) poly.push(px1, right)
-          if (c > THRESHOLD) poly.push(px1, py1)
+          if (c > level) poly.push(px1, py1)
           if ((code & 4) >> 2 !== (code & 8) >> 3) poly.push(bottom, py1)
-          if (d > THRESHOLD) poly.push(px, py1)
+          if (d > level) poly.push(px, py1)
           if ((code & 8) >> 3 !== (code & 1)) poly.push(px, left)
         }
 
@@ -258,7 +266,7 @@ export class MetaballField {
         const w = this.weightField[row0 + gx]
         // Depth beyond the threshold, used to shade the interior: the middle of
         // a mass is denser than its rim, which is what gives it volume.
-        fn(poly, w > 0 ? this.hueField[row0 + gx] / w : 0, a - THRESHOLD)
+        fn(poly, w > 0 ? this.hueField[row0 + gx] / w : 0, a - level)
       }
     }
   }
