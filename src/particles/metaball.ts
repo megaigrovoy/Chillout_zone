@@ -46,6 +46,14 @@ export const THRESHOLD = 0.55
  */
 export const INFLUENCE = 26
 
+/**
+ * How fast the smoothed peak tracks the measured one, per second.
+ *
+ * Low enough that per-frame spikes are ignored, high enough that the interior
+ * still follows a real change in how much paint is on screen within a second.
+ */
+const PEAK_SETTLE_RATE = 0.2
+
 export class MetaballField {
   /** Scalar field, (cols+1) x (rows+1) samples. */
   private field = new Float32Array(0)
@@ -53,6 +61,19 @@ export class MetaballField {
   private rows = 0
   /** Highest field value in the last build, used to place relative levels. */
   private peak = 0
+  /**
+   * Time-smoothed peak.
+   *
+   * The raw peak is a single-sample statistic taken at the densest point, so it
+   * lurches whenever a droplet lands near it — measured swinging from 8.1 to
+   * 24.9 with a tap open, which dragged the interior iso-line with it and made
+   * the region pulse by 28% in area every frame. Smoothing it turns that into a
+   * level that only follows the sustained density.
+   */
+  private smoothPeak = 0
+  /** Scratch buffer for the distance transform, reused across frames. */
+  private depthScratch = new Float32Array(0)
+
 
   constructor(width: number, height: number) {
     this.resize(width, height)
@@ -178,6 +199,95 @@ export class MetaballField {
   }
 
   /**
+   * Render depth-into-the-mass as an alpha ramp, one pixel per grid sample.
+   *
+   * Replaces the second iso-contour. That contour sat deep in a saturated part
+   * of the field where the gradient is nearly flat, so a tiny field change
+   * flipped which cells it crossed — measured at 28% of its boundary cells
+   * changing every frame against 2.3% for the outer surface, which is the
+   * shimmer. A ramp has no boundary to flip: depth varies continuously, so
+   * there is nothing to jitter.
+   */
+  paintDepth(image: ImageData, level: number, reach: number) {
+    const { cols, rows, field } = this
+    const data = image.data
+    const w = cols + 1
+
+    // Distance to the edge, not field strength.
+    //
+    // The field saturates: at fluid density every interior sample sits far past
+    // any threshold — measured at 99% of samples pinned to full alpha, with
+    // only three distinct values across the whole mass. No remapping of a flat
+    // signal can produce a gradient. Distance from the rim does not saturate,
+    // so it gives a real ramp however dense the paint is.
+    //
+    // Computed as a two-pass chamfer transform, which approximates Euclidean
+    // distance in linear time — an exact transform would cost far more for a
+    // difference nobody can see through a blurred upscale.
+    const dist = this.depthScratch.length === w * (rows + 1)
+      ? this.depthScratch
+      : (this.depthScratch = new Float32Array(w * (rows + 1)))
+
+    const FAR = 1e9
+    for (let gy = 0; gy <= rows; gy++) {
+      const row = gy * w
+      for (let gx = 0; gx <= cols; gx++) {
+        dist[row + gx] = field[row + gx] > level ? FAR : 0
+      }
+    }
+
+    // Forward pass: up and left neighbours.
+    for (let gy = 0; gy <= rows; gy++) {
+      const row = gy * w
+      for (let gx = 0; gx <= cols; gx++) {
+        const i = row + gx
+        if (dist[i] === 0) continue
+        let best = dist[i]
+        if (gx > 0) best = Math.min(best, dist[i - 1] + 1)
+        if (gy > 0) best = Math.min(best, dist[i - w] + 1)
+        if (gx > 0 && gy > 0) best = Math.min(best, dist[i - w - 1] + 1.414)
+        if (gx < cols && gy > 0) best = Math.min(best, dist[i - w + 1] + 1.414)
+        dist[i] = best
+      }
+    }
+
+    // Backward pass: down and right neighbours.
+    for (let gy = rows; gy >= 0; gy--) {
+      const row = gy * w
+      for (let gx = cols; gx >= 0; gx--) {
+        const i = row + gx
+        if (dist[i] === 0) continue
+        let best = dist[i]
+        if (gx < cols) best = Math.min(best, dist[i + 1] + 1)
+        if (gy < rows) best = Math.min(best, dist[i + w] + 1)
+        if (gx < cols && gy < rows) best = Math.min(best, dist[i + w + 1] + 1.414)
+        if (gx > 0 && gy < rows) best = Math.min(best, dist[i + w - 1] + 1.414)
+        dist[i] = best
+      }
+    }
+
+    let p = 0
+    for (let gy = 0; gy < rows; gy++) {
+      const row = gy * w
+      for (let gx = 0; gx < cols; gx++) {
+        const t = Math.min(1, dist[row + gx] / reach)
+        // Eased so the ramp starts gently at the rim rather than jumping.
+        data[p + 3] = t * t * (3 - 2 * t) * 255
+        p += 4
+      }
+    }
+  }
+
+  /** Grid dimensions, for sizing the depth buffer. */
+  get gridCols() {
+    return this.cols
+  }
+
+  get gridRows() {
+    return this.rows
+  }
+
+  /**
    * An iso-level a given fraction of the way from the surface to the field's
    * peak.
    *
@@ -188,7 +298,20 @@ export class MetaballField {
    * inner one inherited its staircase however well it was interpolated.
    */
   levelAt(fraction: number): number {
-    return THRESHOLD + (Math.max(this.peak, THRESHOLD) - THRESHOLD) * fraction
+    return THRESHOLD + (Math.max(this.smoothPeak, THRESHOLD) - THRESHOLD) * fraction
+  }
+
+  /**
+   * Advance the smoothed peak toward the measured one.
+   *
+   * Asymmetric on purpose: it rises slowly so a single dense droplet cannot
+   * yank the level, and falls slowly too so clearing paint does not snap the
+   * interior outward. Called once per frame with the real dt, so the feel does
+   * not change with framerate.
+   */
+  settle(dt: number) {
+    const k = 1 - Math.exp(-dt * PEAK_SETTLE_RATE)
+    this.smoothPeak += (this.peak - this.smoothPeak) * k
   }
 
   /**

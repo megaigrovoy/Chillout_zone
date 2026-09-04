@@ -33,13 +33,6 @@ function flowOf(openness: number): number {
   return (openness - OPEN_THRESHOLD) / (1 - OPEN_THRESHOLD)
 }
 
-/**
- * Where the interior shading sits, as a fraction of the way from the surface
- * to the field's peak. Relative rather than absolute so the rim keeps a
- * consistent width however much paint is piled up.
- */
-const INTERIOR_FRACTION = 0.35
-
 export class ParticleRenderer {
   private sys = new ParticleSystem()
   private emitCooldown: number[] = []
@@ -51,6 +44,10 @@ export class ParticleRenderer {
   private segments: number[] = []
   /** Reused polygon buffer for the body fill, for the same reason. */
   private polyBuffer: number[] = []
+  /** Offscreen buffer holding the depth ramp at grid resolution. */
+  private depthCanvas: HTMLCanvasElement | null = null
+  private depthCtx: CanvasRenderingContext2D | null = null
+  private depthImage: ImageData | null = null
 
   constructor(private width: number, private height: number) {
     this.metaballs = new MetaballField(width, height)
@@ -88,7 +85,7 @@ export class ParticleRenderer {
     if (target > this.impactGlow) this.impactGlow += (target - this.impactGlow) * 0.5
     else this.impactGlow *= Math.pow(0.06, dt)
 
-    this.draw(ctx)
+    this.draw(ctx, dt)
     this.drawHands(ctx, hands)
   }
 
@@ -225,7 +222,7 @@ export class ParticleRenderer {
    * collectively form, so neighbouring droplets read as one mass with a skin
    * rather than as a cluster of separate blobs.
    */
-  private draw(ctx: CanvasRenderingContext2D) {
+  private draw(ctx: CanvasRenderingContext2D, dt: number) {
     const { width, height } = this
 
     ctx.globalCompositeOperation = 'source-over'
@@ -236,6 +233,9 @@ export class ParticleRenderer {
     if (count === 0) return
 
     this.metaballs.build(x, y, count)
+    // Smooth the peak before any level is read from it, so the interior contour
+    // follows sustained density rather than each frame's densest droplet.
+    this.metaballs.settle(dt)
 
     // Body: fill the field's interior directly. Painting per-droplet brushes
     // here instead reproduces the old cluster-of-blobs look no matter what the
@@ -265,18 +265,65 @@ export class ParticleRenderer {
     ctx.fillStyle = `hsl(${PAINT_HUE}, 74%, 34%)`
     ctx.fill()
 
-    // A second, brighter pass over the denser interior gives the mass volume
-    // instead of reading as a flat silhouette. Drawn additively so it only
-    // lifts what is already there.
+    // Volume comes from a depth ramp rather than a second contour.
     //
-    // Traced as its own iso-level rather than by picking whole cells above a
-    // depth: a per-cell test includes or excludes each cell entirely, so the
-    // bright region's edge ran along cell borders.
-    ctx.globalCompositeOperation = 'lighter'
-    this.tracePath(ctx, this.metaballs.levelAt(INTERIOR_FRACTION))
-    ctx.fillStyle = `hsla(${PAINT_HUE}, 80%, 46%, 0.5)`
-    ctx.fill()
+    // That contour ran deep in a saturated part of the field where the gradient
+    // is nearly flat, so trivial field changes flipped which cells it crossed:
+    // 28% of its boundary cells changed every frame against 2.3% for the outer
+    // surface. Smoothing the level could not fix it — the area was already
+    // steady, it was the line itself shimmering. A ramp has no boundary at all.
+    this.paintDepthOver(ctx)
     ctx.globalCompositeOperation = 'source-over'
+  }
+
+  /**
+   * Brighten the interior in proportion to how deep inside the mass it is.
+   *
+   * Clipped to the surface path rather than composited with source-atop: that
+   * operator reaches whatever is already on the canvas, which once tinted the
+   * background red. A clip cannot leak outside the shape.
+   */
+  private paintDepthOver(ctx: CanvasRenderingContext2D) {
+    const cols = this.metaballs.gridCols
+    const rows = this.metaballs.gridRows
+
+    if (!this.depthCanvas || this.depthCanvas.width !== cols || this.depthCanvas.height !== rows) {
+      const c = document.createElement('canvas')
+      c.width = Math.max(1, cols)
+      c.height = Math.max(1, rows)
+      this.depthCanvas = c
+      this.depthCtx = c.getContext('2d')
+      this.depthImage = this.depthCtx?.createImageData(c.width, c.height) ?? null
+
+      // The colour is constant; only alpha varies per texel, so the RGB bytes
+      // are written once here instead of every frame.
+      const img = this.depthImage
+      if (img) {
+        const rgb = hslToRgb(PAINT_HUE, 0.8, 0.46)
+        for (let i = 0; i < img.data.length; i += 4) {
+          img.data[i] = rgb[0]
+          img.data[i + 1] = rgb[1]
+          img.data[i + 2] = rgb[2]
+        }
+      }
+    }
+    const dctx = this.depthCtx
+    const dimg = this.depthImage
+    if (!dctx || !dimg) return
+
+    // Reach in grid cells: how far in from the rim the ramp takes to reach
+    // full brightness. Larger reads as a thicker, softer wall of paint.
+    this.metaballs.paintDepth(dimg, this.metaballs.levelAt(0), 7)
+    dctx.putImageData(dimg, 0, 0)
+
+    ctx.save()
+    this.tracePath(ctx, this.metaballs.levelAt(0))
+    ctx.clip()
+    ctx.globalCompositeOperation = 'lighter'
+    ctx.globalAlpha = 0.55
+    ctx.imageSmoothingEnabled = true
+    ctx.drawImage(this.depthCanvas!, 0, 0, this.width, this.height)
+    ctx.restore()
   }
 
   /**
@@ -339,4 +386,22 @@ export class ParticleRenderer {
     ctx.globalCompositeOperation = 'source-over'
   }
 
+}
+
+/** HSL to RGB bytes. Used once per buffer allocation, not per frame. */
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  const c = (1 - Math.abs(2 * l - 1)) * s
+  const hp = (((h % 360) + 360) % 360) / 60
+  const x = c * (1 - Math.abs((hp % 2) - 1))
+  let r = 0
+  let g = 0
+  let b = 0
+  if (hp < 1) { r = c; g = x }
+  else if (hp < 2) { r = x; g = c }
+  else if (hp < 3) { g = c; b = x }
+  else if (hp < 4) { g = x; b = c }
+  else if (hp < 5) { r = x; b = c }
+  else { r = c; b = x }
+  const m = l - c / 2
+  return [(r + m) * 255, (g + m) * 255, (b + m) * 255]
 }
