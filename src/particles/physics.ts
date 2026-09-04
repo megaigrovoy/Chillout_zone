@@ -16,11 +16,14 @@
  * Pool size.
  *
  * Droplets never expire, so this is also how long a stroke survives: once the
- * pool is full each new droplet overwrites the oldest, and at the full-open
- * emission rate 5200 droplets were recycled in 8.9s with one hand and 4.5s with
- * two, which visibly ate the painting. Larger keeps strokes alive far longer.
+ * pool is full each new droplet overwrites the oldest.
+ *
+ * Cut back sharply once the surface became a metaball contour. The body no
+ * longer comes from packing enough droplets to look solid — the field does that
+ * — so each droplet can be larger and there need be far fewer of them, which
+ * buys back the frame time the field costs.
  */
-export const MAX_PARTICLES = 12000
+export const MAX_PARTICLES = 3000
 
 /**
  * Uniform particle radius, px. Uniform because it keeps the broad-phase grid
@@ -87,7 +90,7 @@ const VISCOSITY = 26
  * correction won — the fluid packed to a measured 0.62px spacing. Making the
  * two agree is what lets the fluid hold an open, rounded structure.
  */
-const REST_SPACING = 3.4
+const REST_SPACING = 6.0
 
 /**
  * Cap on accumulated cohesion, as a multiple of a single neighbour's pull.

@@ -1,5 +1,6 @@
 import { ParticleSystem, RADIUS } from './physics'
 import { drawHandOverlay } from './handOverlay'
+import { MetaballField } from './metaball'
 import type { HandState } from '../tracking/types'
 
 /**
@@ -53,11 +54,19 @@ export class ParticleRenderer {
    */
   private brushes = new Map<string, HTMLCanvasElement>()
 
-  constructor(private width: number, private height: number) {}
+  /** Scalar field the surface is extracted from. */
+  private metaballs: MetaballField
+  /** Reused segment buffer, so contouring allocates nothing per frame. */
+  private segments: number[] = []
+
+  constructor(private width: number, private height: number) {
+    this.metaballs = new MetaballField(width, height)
+  }
 
   resize(width: number, height: number) {
     this.width = width
     this.height = height
+    this.metaballs.resize(width, height)
   }
 
   reset() {
@@ -131,7 +140,7 @@ export class ParticleRenderer {
 
       if (this.emitCooldown[index] > 0) return
       // Slower emission than a spray: paint is laid down, not poured.
-      this.emitCooldown[index] = 0.05 - flow * 0.038
+      this.emitCooldown[index] = 0.075 - flow * 0.05
 
       const cx = (1 - hand.center.x) * this.width
       const cy = hand.center.y * this.height
@@ -147,7 +156,7 @@ export class ParticleRenderer {
       // launch velocity of its own, it only goes where the hand takes it. A
       // wider-open hand releases more at once, so opening further visibly
       // increases the flow rather than only its frequency.
-      const burst = 2 + Math.round(flow * 5)
+      const burst = 1 + Math.round(flow * 2)
       for (let k = 0; k < burst; k++) {
         const a = Math.random() * Math.PI * 2
         const speed = 4 + Math.random() * 16
@@ -218,13 +227,13 @@ export class ParticleRenderer {
   }
 
   /**
-   * Draw the paint.
+   * Draw the paint as one connected surface.
    *
-   * Additive glowing dots read as sparks, not as pigment. Thick paint needs the
-   * opposite: opaque, saturated blobs that merge where they overlap and hide
-   * what is behind them. So droplets are drawn as solid radial blobs with a
-   * soft edge, and the canvas is cleared rather than faded — a fading trail
-   * would leave ghosts of paint that is no longer there.
+   * Two layers: a soft body built from the droplets themselves, and a contour
+   * traced from the metaball field on top of it. The contour is what sells the
+   * substance — it is a single continuous outline around whatever the droplets
+   * collectively form, so neighbouring droplets read as one mass with a skin
+   * rather than as a cluster of separate blobs.
    */
   private draw(ctx: CanvasRenderingContext2D) {
     const { width, height } = this
@@ -233,35 +242,72 @@ export class ParticleRenderer {
     ctx.fillStyle = '#070a16'
     ctx.fillRect(0, 0, width, height)
 
-    const { x, y, hue, flash, age, count } = this.sys
+    const { x, y, hue, count } = this.sys
     if (count === 0) return
 
+    this.metaballs.build(x, y, hue, count)
 
-    // Two passes. The first lays down a wide, dark body: overlapping blobs
-    // build up into a continuous mass with soft boundaries, the way merging
-    // lava-lamp globules look. The second adds a tighter bright core so the
-    // paint has depth instead of reading as flat silhouette.
-    for (let pass = 0; pass < 2; pass++) {
-      const body = pass === 0
-      const size = RADIUS * (body ? 7.5 : 3.6)
-      const baseAlpha = body ? 0.5 : 0.28
+    // Body: wide soft blobs, which fill the interior the contour will enclose.
+    // Drawn under the outline so the surface reads as skin over volume.
+    ctx.globalAlpha = 0.42
+    const size = RADIUS * 8.5
+    for (let i = 0; i < count; i++) {
+      const brush = this.brushFor(hue[i], true, 0)
+      ctx.drawImage(brush, x[i] - size, y[i] - size, size * 2, size * 2)
+    }
+    ctx.globalAlpha = 1
 
-      for (let i = 0; i < count; i++) {
-        // Fade in over the first moments. Recycled slots teleport a droplet
-        // from wherever it was to the hand, and fading hides both ends of that
-        // jump; fresh droplets get the same treatment for free.
-        const fade = Math.min(1, age[i] * 4)
-        ctx.globalAlpha = baseAlpha * fade
+    this.drawSurface(ctx)
+  }
 
-        // Flash is quantised into a few steps so the brush cache stays small;
-        // at these sizes the banding is invisible.
-        const step = Math.round(flash[i] * 3)
-        const brush = this.brushFor(hue[i], body, step)
-        ctx.drawImage(brush, x[i] - size, y[i] - size, size * 2, size * 2)
+  /**
+   * Stroke the metaball contour.
+   *
+   * Segments are batched per colour band rather than stroked individually:
+   * marching squares emits hundreds of them, and a stroke() per segment would
+   * dominate the frame. Banding by hue keeps the two hands distinguishable
+   * along the surface where their paint meets.
+   */
+  private drawSurface(ctx: CanvasRenderingContext2D) {
+    const segs = this.segments
+    const n = this.metaballs.contour(segs)
+    if (n === 0) return
+
+    ctx.globalCompositeOperation = 'lighter'
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+
+    // Two hue bands, one per hand, so the skin is tinted by whichever paint
+    // formed it. More bands would mean more stroke calls for no visible gain.
+    for (let band = 0; band < 2; band++) {
+      const bandHue = band === 0 ? LEFT_HUE : RIGHT_HUE
+
+      for (let pass = 0; pass < 2; pass++) {
+        const glow = pass === 0
+        ctx.lineWidth = glow ? 7 : 1.8
+        ctx.strokeStyle = `hsla(${bandHue}, 95%, ${glow ? 55 : 78}%, ${glow ? 0.06 : 0.34})`
+        ctx.beginPath()
+
+        let any = false
+        for (let k = 0; k < segs.length; k += 4) {
+          const mx = (segs[k] + segs[k + 2]) * 0.5
+          const my = (segs[k + 1] + segs[k + 3]) * 0.5
+          const h = this.metaballs.hueAt(mx, my)
+          // Assign each segment to the nearer band, so the boundary between the
+          // two colours falls where the paints actually meet.
+          const nearer = Math.abs(h - LEFT_HUE) < Math.abs(h - RIGHT_HUE) ? 0 : 1
+          if (nearer !== band) continue
+
+          ctx.moveTo(segs[k], segs[k + 1])
+          ctx.lineTo(segs[k + 2], segs[k + 3])
+          any = true
+        }
+
+        if (any) ctx.stroke()
       }
     }
 
-    ctx.globalAlpha = 1
+    ctx.globalCompositeOperation = 'source-over'
   }
 
   /**
